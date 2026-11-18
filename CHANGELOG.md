@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.1...open-trcc-v0.1.2) (2026-11-18)
+
+
+### Bug Fixes
+
+* unwrap sysinfo Components::new_with_refreshed_list Result on Windows/macOS ([f334122](https://github.com/emirhannaneli/open-trcc/commit/f334122f6ac09a5c7b3a2bfcedb7e8aee2ce59fd))
+
 ## [0.1.1](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.0...open-trcc-v0.1.1) (2026-11-18)
 
 
