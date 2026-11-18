@@ -28,7 +28,8 @@ impl SystemStats {
         let mut stats = Self {
             sys: System::new_all().expect("failed to init sysinfo"),
             #[cfg(not(target_os = "linux"))]
-            components: Components::new_with_refreshed_list(),
+            components: Components::new_with_refreshed_list()
+                .expect("failed to init sysinfo components"),
             hwmon_cpu_temp_path: None,
             hwmon_amdgpu_temp_path: None,
             drm_gpu_busy_path: None,
@@ -85,7 +86,7 @@ impl SystemStats {
 
         #[cfg(not(target_os = "linux"))]
         {
-            self.components.refresh(false);
+            let _ = self.components.refresh(false);
             for comp in &self.components {
                 let label = comp.label().to_lowercase();
                 if (label.contains("cpu") || label.contains("package") || label.contains("tctl"))
