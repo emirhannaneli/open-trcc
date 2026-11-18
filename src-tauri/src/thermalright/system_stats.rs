@@ -1,10 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+#[cfg(not(target_os = "linux"))]
+use sysinfo::Components;
 use sysinfo::System;
 
 pub struct SystemStats {
     sys: System,
+    #[cfg(not(target_os = "linux"))]
+    components: Components,
     hwmon_cpu_temp_path: Option<PathBuf>,
     hwmon_amdgpu_temp_path: Option<PathBuf>,
     drm_gpu_busy_path: Option<PathBuf>,
@@ -23,6 +27,8 @@ impl SystemStats {
 
         let mut stats = Self {
             sys: System::new_all().expect("failed to init sysinfo"),
+            #[cfg(not(target_os = "linux"))]
+            components: Components::new_with_refreshed_list(),
             hwmon_cpu_temp_path: None,
             hwmon_amdgpu_temp_path: None,
             drm_gpu_busy_path: None,
@@ -67,14 +73,32 @@ impl SystemStats {
     }
 
     pub fn get_cpu_temp(&mut self) -> f32 {
-        if let Some(ref path) = self.hwmon_cpu_temp_path {
-            if let Ok(content) = fs::read_to_string(path) {
-                if let Ok(val) = content.trim().parse::<f32>() {
-                    return val / 1000.0;
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(ref path) = self.hwmon_cpu_temp_path
+                && let Some(val) = read_sysfs_f32(path)
+            {
+                return val / 1000.0;
+            }
+            self.detect_sensors();
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.components.refresh(false);
+            for comp in &self.components {
+                let label = comp.label().to_lowercase();
+                if (label.contains("cpu") || label.contains("package") || label.contains("tctl"))
+                    && let Some(temp) = comp.temperature()
+                {
+                    return temp;
                 }
             }
+            if let Some(temp) = self.components.iter().filter_map(|c| c.temperature()).next() {
+                return temp;
+            }
         }
-        self.detect_sensors();
+
         45.0
     }
 
@@ -84,42 +108,36 @@ impl SystemStats {
     }
 
     pub fn refresh_gpu(&mut self) -> (f32, f32) {
-        if self.has_nvidia_smi {
-            if let Ok(output) = Command::new("nvidia-smi")
+        if self.has_nvidia_smi
+            && let Ok(output) = Command::new("nvidia-smi")
                 .args([
                     "--query-gpu=temperature.gpu,utilization.gpu",
                     "--format=csv,noheader,nounits",
                 ])
                 .output()
-            {
-                if output.status.success() {
-                    let text = String::from_utf8_lossy(&output.stdout);
-                    if let Some(line) = text.lines().next() {
-                        let mut parts = line.split(',').map(|s| s.trim().parse::<f32>());
-                        if let (Some(Ok(temp)), Some(Ok(usage))) = (parts.next(), parts.next()) {
-                            self.last_gpu_temp = temp;
-                            self.last_gpu_usage = usage;
-                            return (temp, usage);
-                        }
-                    }
+            && output.status.success()
+        {
+            let text = String::from_utf8_lossy(&output.stdout);
+            if let Some(line) = text.lines().next() {
+                let mut parts = line.split(',').map(|s| s.trim().parse::<f32>());
+                if let (Some(Ok(temp)), Some(Ok(usage))) = (parts.next(), parts.next()) {
+                    self.last_gpu_temp = temp;
+                    self.last_gpu_usage = usage;
+                    return (temp, usage);
                 }
             }
         }
 
-        if let Some(ref path) = self.hwmon_amdgpu_temp_path {
-            if let Ok(content) = fs::read_to_string(path) {
-                if let Ok(val) = content.trim().parse::<f32>() {
-                    self.last_gpu_temp = val / 1000.0;
-                }
-            }
+        if let Some(ref path) = self.hwmon_amdgpu_temp_path
+            && let Some(val) = read_sysfs_f32(path)
+        {
+            self.last_gpu_temp = val / 1000.0;
         }
 
-        if let Some(ref path) = self.drm_gpu_busy_path {
-            if let Ok(content) = fs::read_to_string(path) {
-                if let Ok(val) = content.trim().parse::<f32>() {
-                    self.last_gpu_usage = val;
-                }
-            }
+        if let Some(ref path) = self.drm_gpu_busy_path
+            && let Some(val) = read_sysfs_f32(path)
+        {
+            self.last_gpu_usage = val;
         }
 
         (self.last_gpu_temp, self.last_gpu_usage)
@@ -128,4 +146,14 @@ impl SystemStats {
     pub fn cached_gpu(&self) -> (f32, f32) {
         (self.last_gpu_temp, self.last_gpu_usage)
     }
+}
+
+impl Default for SystemStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn read_sysfs_f32(path: &PathBuf) -> Option<f32> {
+    fs::read_to_string(path).ok()?.trim().parse::<f32>().ok()
 }

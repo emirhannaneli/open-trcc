@@ -6,7 +6,7 @@ import "./App.css";
 
 import thermalrightLogo from "./assets/thermalright-logo.svg";
 
-const REPO_URL = "https://github.com/emirman/open-trcc";
+const REPO_URL = "https://github.com/emirhannaneli/open-trcc";
 const WEBSITE_URL = "https://emirman.dev";
 
 type LedMode = "Static" | "Breathing" | "ColorCycle" | "Rainbow" | "CpuTemp" | "CpuLoad" | "Off";
@@ -14,6 +14,8 @@ type DisplaySource = "CpuTemp" | "CpuUsage" | "GpuTemp" | "GpuUsage" | "AutoCycl
 
 interface DeviceStatus {
   connected: boolean;
+  device_name: string;
+  device_usb_id: string;
   cpu_temp: number;
   cpu_usage: number;
   gpu_temp: number;
@@ -80,6 +82,8 @@ function formatTemperature(celsius: number, unit: "Celsius" | "Fahrenheit"): num
 export default function App() {
   const [status, setStatus] = useState<DeviceStatus>({
     connected: false,
+    device_name: "Frozen Magic 360 Digital",
+    device_usb_id: "0416:8001",
     cpu_temp: 0,
     cpu_usage: 0,
     gpu_temp: 0,
@@ -169,7 +173,7 @@ export default function App() {
         <div className="header-brand">
           <img src={thermalrightLogo} alt="Thermalright" className="brand-logo" />
           <span className="header-divider" />
-          <span className="device-title">Frozen Magic 360 Digital</span>
+          <span className="device-title">{status.device_name}</span>
         </div>
 
         <div className="header-actions">
@@ -277,7 +281,7 @@ export default function App() {
           </div>
 
           <div className="unofficial-notice">
-            <span>Unofficial open-source Linux client (MIT)</span>
+            <span>Unofficial open-source client (MIT)</span>
             <div className="notice-links">
               <button
                 type="button"
@@ -407,16 +411,16 @@ export default function App() {
                 {showAdvanced && (
                   <dl className="details-list">
                     <div className="details-row">
-                      <dt>Model</dt>
-                      <dd>Frozen Magic 360 Digital V2</dd>
+                      <dt>Device</dt>
+                      <dd>{status.device_name}</dd>
                     </div>
                     <div className="details-row">
                       <dt>USB ID</dt>
-                      <dd>0416:8001</dd>
+                      <dd>{status.device_usb_id}</dd>
                     </div>
                     <div className="details-row">
                       <dt>Transport</dt>
-                      <dd>Linux hidraw</dd>
+                      <dd>USB HID (hidraw / WinHID)</dd>
                     </div>
                     <div className="details-row">
                       <dt>LED layout</dt>

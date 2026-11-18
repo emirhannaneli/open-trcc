@@ -12,6 +12,8 @@ use thermalright::{
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub struct DeviceStatus {
     pub connected: bool,
+    pub device_name: String,
+    pub device_usb_id: String,
     pub cpu_temp: f32,
     pub cpu_usage: f32,
     pub gpu_temp: f32,
@@ -152,6 +154,8 @@ fn set_temp_unit(unit: String, state: State<'_, Arc<Mutex<AppState>>>) -> Result
 pub fn run() {
     let initial_status = DeviceStatus {
         connected: false,
+        device_name: "Frozen Magic 360 Digital".to_string(),
+        device_usb_id: "0416:8001".to_string(),
         cpu_temp: 0.0,
         cpu_usage: 0.0,
         gpu_temp: 0.0,
@@ -219,6 +223,10 @@ pub fn run() {
 
                         let is_conn = state.device.refresh_device();
                         state.status.connected = is_conn;
+                        if let Some(spec) = state.device.detected_spec() {
+                            state.status.device_name = spec.name.to_string();
+                            state.status.device_usb_id = format!("{:04x}:{:04x}", spec.vid, spec.pid);
+                        }
 
                         if is_conn && state.status.is_on {
                             let packet = state.builder.build_display_packet(

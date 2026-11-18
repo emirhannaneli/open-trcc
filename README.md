@@ -1,26 +1,32 @@
 # Open TRCC
 
-An open-source, unofficial Linux control center for Thermalright Digital ARGB coolers, built with **Tauri v2**, **Rust**, and **React**.
+A lightweight, open-source control center for Thermalright Digital ARGB and Vision coolers on **Linux**, **Windows**, and **macOS**. Built with Rust, Tauri, and React for real-time hardware monitoring and lighting control with minimal overhead.
 
-> **Disclaimer:** This is an independent community project and is not affiliated with or endorsed by Thermalright.
+> **Note:** Open TRCC is an independent, unofficial open-source project and is not affiliated with Thermalright.
 
 ## Supported Hardware
 
-- **Thermalright Frozen Magic 360 Digital ARGB Black V2** (`0416:8001` Nuvoton HID Transfer)
-- Compatible 30-LED (14-segment + unit + 15-LED ring) `0416:8001` Digital coolers
+### HID Digital LED Coolers (Full Control)
+- **Thermalright Frozen Magic 360 Digital ARGB Black V2** (`0416:8001`)
+- **Thermalright Digital LED / Air Coolers** (`0416:8001`, `0418:5303`, `0418:5304`)
 
-## Features
+### Bulk USB Vision LCD Coolers (Detection)
+- **Thermalright Vision / Warframe LCD Series** (`87ad:70db`, `0416:5302`, `0416:5406`, `0416:5408`, `0416:5409`)
 
-- **Native Linux HID Communication:** Direct communication via `/dev/hidraw*` (`HIDIOCGRAWINFO`) with no Wine, Windows services, or external dependencies.
-- **Live Hardware Telemetry:**
-  - CPU temperature via `hwmon` (`k10temp`, `coretemp`, `cpu_thermal`) and CPU load via `sysinfo`.
-  - GPU temperature & load via `nvidia-smi` or AMD/DRM sysfs (`amdgpu`, `gpu_busy_percent`).
-- **Display Modes:** CPU Temp, CPU Usage, GPU Temp, GPU Usage, configurable Auto Cycle (`1–15s`), `°C`/`°F` switching, and Segment Test Mode (`88`).
-- **ARGB Lighting:** Rainbow, Color Cycle, Breathing, Static, Thermal Sync, Load Sync, custom RGB/hex input, brightness (`0–100%`), and speed (`0.2x–3.0x`).
+## Key Features
 
-## Linux Setup (udev Rule)
+- **Cross-Platform USB HID:** Direct communication via `/dev/hidraw*` on Linux and `hidapi` on Windows/macOS.
+- **Live Telemetry:** Real-time CPU and GPU temperature/utilization monitoring.
+- **Display Control:** Switch between CPU/GPU temperature, load percentage, configurable Auto Cycle (`1–15s`), `°C`/`°F`, and a full 7-segment test mode (`88`).
+- **ARGB Lighting:** Rainbow, Color Cycle, Breathing, Static, Thermal Sync, and Load Sync with custom RGB/hex color, brightness, and speed controls.
 
-Grant non-root access to the USB HID interface:
+## Installation
+
+Download the latest installer for **Windows** (`.exe`, `.msi`), **macOS** (`.dmg`), or **Linux** (`.deb`, `.rpm`, `.AppImage`) from the [Releases](https://github.com/emirhannaneli/open-trcc/releases) page.
+
+### Linux USB Permissions (`udev`)
+
+On Linux, grant non-root access to the USB HID interface:
 
 ```bash
 echo 'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="8001", MODE="0666"' | sudo tee /etc/udev/rules.d/99-thermalright.rules
@@ -28,19 +34,13 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=hidraw
 ```
 
-## Development & Build
+## Development
 
 ```bash
 pnpm install
 pnpm tauri dev
 ```
 
-To build a release bundle:
-
-```bash
-pnpm tauri build
-```
-
 ## License
 
-Licensed under the [MIT License](LICENSE).
+Released under the [MIT License](LICENSE).

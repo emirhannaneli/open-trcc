@@ -208,13 +208,13 @@ impl PacketBuilder {
             leds[14] = scaled_color;
         }
 
-        for i in 15..30 {
+        for (i, led) in leds.iter_mut().enumerate().skip(15) {
             if self.mode == LedMode::Rainbow {
                 let offset = (i - 15) as f32 * (360.0 / 15.0);
                 let hue = ((tick as f32 * 5.0 * speed + offset) % 360.0 + 360.0) % 360.0;
-                leds[i] = hsv_to_rgb(hue, 1.0, self.brightness);
+                *led = hsv_to_rgb(hue, 1.0, self.brightness);
             } else {
-                leds[i] = scaled_color;
+                *led = scaled_color;
             }
         }
 
