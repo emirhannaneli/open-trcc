@@ -1,25 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="ring" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0" stop-color="#22d3ee"/>
-      <stop offset="0.55" stop-color="#fbbf24"/>
-      <stop offset="1" stop-color="#f97316"/>
-    </linearGradient>
-    <linearGradient id="digit" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#fdba74"/>
-      <stop offset="1" stop-color="#f97316"/>
-    </linearGradient>
-  </defs>
   <rect x="40" y="40" width="944" height="944" rx="210" fill="#121418"/>
-  <circle cx="512" cy="512" r="368" fill="none" stroke="url(#ring)" stroke-width="64"
-          stroke-linecap="round" stroke-dasharray="1965 347" transform="rotate(115 512 512)"/>
-  <g fill="url(#digit)">
-    <polygon points="453.0,297.0 571.0,297.0 599.0,325.0 571.0,353.0 453.0,353.0 425.0,325.0"/>
-    <polygon points="609.0,335.0 637.0,363.0 637.0,474.0 609.0,502.0 581.0,474.0 581.0,363.0"/>
-    <polygon points="609.0,522.0 637.0,550.0 637.0,661.0 609.0,689.0 581.0,661.0 581.0,550.0"/>
-    <polygon points="453.0,671.0 571.0,671.0 599.0,699.0 571.0,727.0 453.0,727.0 425.0,699.0"/>
-    <polygon points="415.0,522.0 443.0,550.0 443.0,661.0 415.0,689.0 387.0,661.0 387.0,550.0"/>
-    <polygon points="415.0,335.0 443.0,363.0 443.0,474.0 415.0,502.0 387.0,474.0 387.0,363.0"/>
-    <polygon points="453.0,484.0 571.0,484.0 599.0,512.0 571.0,540.0 453.0,540.0 425.0,512.0"/>
-  </g>
+  <rect x="212.0" y="212.9" width="600.0" height="255.4" fill="#ffffff"/>
+  <rect x="212.0" y="530.0" width="265.7" height="281.1" fill="#ffffff"/>
+  <rect x="546.3" y="530.0" width="265.7" height="281.1" fill="#ffffff"/>
 </svg>

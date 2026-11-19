@@ -300,7 +300,10 @@ fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &hide, &separator, &quit])?;
 
-    let mut builder = TrayIconBuilder::with_id("main-tray")
+    // Linux trays (Waybar, KDE, ...) cache icons by file name, which tauri derives
+    // from this id; versioning it makes an updated icon show up after upgrades.
+    let tray_id = concat!("open-trcc-", env!("CARGO_PKG_VERSION"));
+    let mut builder = TrayIconBuilder::with_id(tray_id)
         .tooltip("Open TRCC")
         .menu(&menu)
         .show_menu_on_left_click(false)
