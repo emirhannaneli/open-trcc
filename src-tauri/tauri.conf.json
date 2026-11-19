@@ -46,6 +46,9 @@
           "/usr/lib/udev/rules.d/70-open-trcc.rules": "linux/70-open-trcc.rules"
         }
       }
-    }
+    },
+    "category": "Utility",
+    "shortDescription": "Control Thermalright cooler displays",
+    "publisher": "Emirhan Naneli"
   }
 }

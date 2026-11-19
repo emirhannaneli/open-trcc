@@ -1,8 +1,8 @@
 [package]
 name = "open-trcc"
 version = "0.1.3"
-description = "A Tauri App"
-authors = ["you"]
+description = "Open-source control center for Thermalright cooler displays"
+authors = ["Emirhan Naneli"]
 edition = "2024"
 default-run = "open-trcc"
 
