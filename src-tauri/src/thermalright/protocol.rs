@@ -361,3 +361,17 @@ mod tests {
         assert!(9.0 * RAINBOW_GROUP_STEP_DEG < 60.0);
     }
 }
+
+#[cfg(test)]
+mod power_tests {
+    use super::*;
+
+    #[test]
+    fn off_mode_sends_all_black_frame() {
+        let b = PacketBuilder { mode: LedMode::Off, test_mode: true, ..Default::default() };
+        let p = b.build_display_packet(55.0, 0.0, 0.0, 0.0, 0);
+        assert_eq!(p.len(), 110);
+        assert_eq!(&p[..4], &[0xda, 0xdb, 0xdc, 0xdd]);
+        assert!(p[20..].iter().all(|&c| c == 0));
+    }
+}
