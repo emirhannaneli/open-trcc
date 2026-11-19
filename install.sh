@@ -38,13 +38,25 @@ fetch_text() {
   if command -v curl >/dev/null 2>&1; then curl -fsSL "$1"; else wget -qO- "$1"; fi
 }
 
+# The AppImage runtime and the app itself are separate processes; stop both,
+# or the single-instance lock keeps the old version running after an update.
+stop_running() {
+  pkill -f "$APPIMAGE" 2>/dev/null || true
+  pkill -x "$APP" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    pgrep -x "$APP" >/dev/null 2>&1 || return 0
+    sleep 0.5
+  done
+  pkill -9 -x "$APP" 2>/dev/null || true
+}
+
 as_root() {
   if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
 }
 
 uninstall() {
   info "Stopping Open TRCC"
-  pkill -f "$APPIMAGE" 2>/dev/null || true
+  stop_running
   info "Removing files"
   rm -f "$APPIMAGE" "$BIN_DIR/$APP" "$DESKTOP_FILE" "$ICON_FILE"
   rm -f "$CONFIG_HOME/autostart/$APP.desktop" "$CONFIG_HOME"/autostart/open-trcc*.desktop
@@ -118,9 +130,9 @@ install_app() {
 
   info "Downloading $tag"
   mkdir -p "$INSTALL_DIR" "$BIN_DIR" "$(dirname "$DESKTOP_FILE")" "$(dirname "$ICON_FILE")"
-  pkill -f "$APPIMAGE" 2>/dev/null || true
   fetch "$url" "$APPIMAGE.part"
   chmod +x "$APPIMAGE.part"
+  stop_running
   mv -f "$APPIMAGE.part" "$APPIMAGE"
   ln -sf "$APPIMAGE" "$BIN_DIR/$APP"
 
