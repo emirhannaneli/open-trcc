@@ -58,7 +58,10 @@ fn set_led_mode(mode: String, state: State<'_, Arc<Mutex<AppState>>>) -> Result<
         _ => return Err("Invalid LED mode".into()),
     };
     app.status.led_mode = new_mode;
-    app.builder.mode = new_mode;
+    // While powered off, remember the mode but keep the display dark.
+    if app.status.is_on {
+        app.builder.mode = new_mode;
+    }
     Ok(app.status.clone())
 }
 
@@ -293,7 +296,8 @@ pub fn run() {
                         }
 
                         // Sending the 30-LED frame to another layout lights random LEDs.
-                        if is_conn && state.status.is_on && supported {
+                        // Keep sending while powered off: builder.mode is Off, so the frame is all black.
+                        if is_conn && supported {
                             let packet = state.builder.build_display_packet(
                                 cpu_temp,
                                 cpu_usage,
