@@ -153,6 +153,122 @@ fn set_temp_unit(unit: String, state: State<'_, Arc<Mutex<AppState>>>) -> Result
     Ok(app.status.clone())
 }
 
+/// User choices that survive restarts (stored as JSON in the app config dir).
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+#[serde(default)]
+struct Settings {
+    led_mode: LedMode,
+    display_source: DisplaySource,
+    color: (u8, u8, u8),
+    brightness: f32,
+    speed: f32,
+    cycle_interval_secs: u32,
+    temp_unit: TempUnit,
+    is_on: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            led_mode: LedMode::Rainbow,
+            display_source: DisplaySource::CpuTemp,
+            color: (255, 106, 0),
+            brightness: 1.0,
+            speed: 1.0,
+            cycle_interval_secs: 4,
+            temp_unit: TempUnit::Celsius,
+            is_on: true,
+        }
+    }
+}
+
+impl Settings {
+    fn from_status(s: &DeviceStatus) -> Self {
+        Self {
+            led_mode: s.led_mode,
+            display_source: s.display_source,
+            color: s.color,
+            brightness: s.brightness,
+            speed: s.speed,
+            cycle_interval_secs: s.cycle_interval_secs,
+            temp_unit: s.temp_unit,
+            is_on: s.is_on,
+        }
+    }
+
+    fn apply(&self, app: &mut AppState) {
+        let st = &mut app.status;
+        st.led_mode = self.led_mode;
+        st.display_source = self.display_source;
+        st.color = self.color;
+        st.brightness = self.brightness.clamp(0.0, 1.0);
+        st.speed = self.speed.clamp(0.2, 3.0);
+        st.cycle_interval_secs = self.cycle_interval_secs.clamp(1, 30);
+        st.temp_unit = self.temp_unit;
+        st.is_on = self.is_on;
+
+        let b = &mut app.builder;
+        b.mode = if st.is_on { st.led_mode } else { LedMode::Off };
+        b.display_source = st.display_source;
+        b.color = st.color;
+        b.brightness = st.brightness;
+        b.speed = st.speed;
+        b.cycle_interval_secs = st.cycle_interval_secs;
+        b.temp_unit = st.temp_unit;
+    }
+
+    fn load(path: &std::path::Path) -> Option<Self> {
+        serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+    }
+
+    fn save(&self, path: &std::path::Path) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(json) = serde_json::to_string_pretty(self) {
+            let _ = std::fs::write(path, json);
+        }
+    }
+}
+
+/// Passed by the autostart entry so the app boots straight into the tray.
+const HIDDEN_ARG: &str = "--hidden";
+
+#[tauri::command]
+fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let launcher = app.autolaunch();
+    if enabled {
+        launcher.enable()
+    } else {
+        launcher.disable()
+    }
+    .map_err(|e| e.to_string())?;
+    launcher.is_enabled().map_err(|e| e.to_string())
+}
+
+/// Turn autostart on the first time the app runs; afterwards respect the user's choice.
+fn enable_autostart_on_first_run(app: &tauri::App, config_dir: &std::path::Path) {
+    use tauri_plugin_autostart::ManagerExt;
+    let marker = config_dir.join("autostart-initialized");
+    if marker.exists() {
+        return;
+    }
+    match app.autolaunch().enable() {
+        Ok(()) => {
+            let _ = std::fs::create_dir_all(config_dir);
+            let _ = std::fs::write(&marker, "");
+        }
+        Err(e) => eprintln!("[open-trcc] could not enable autostart: {}", e),
+    }
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -236,6 +352,16 @@ pub fn run() {
     let background_state = Arc::clone(&app_state);
 
     tauri::Builder::default()
+        // Must be registered first: a second launch just focuses the running one,
+        // so two processes never fight over the HID device.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .args([HIDDEN_ARG])
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
@@ -249,6 +375,8 @@ pub fn run() {
             set_test_mode,
             set_power,
             set_temp_unit,
+            get_autostart,
+            set_autostart,
         ])
         .on_window_event(|window, event| {
             // Closing the window only hides it; the LED loop keeps running in the tray.
@@ -261,7 +389,25 @@ pub fn run() {
             setup_tray(app)?;
             let handle = app.handle().clone();
 
+            let config_dir = app.path().app_config_dir()?;
+            let settings_path = config_dir.join("settings.json");
+            if let Some(saved) = Settings::load(&settings_path)
+                && let Ok(mut state) = background_state.lock()
+            {
+                saved.apply(&mut state);
+            }
+            enable_autostart_on_first_run(app, &config_dir);
+
+            // The window starts hidden (tauri.conf.json) to avoid a flash on login.
+            if !std::env::args().any(|a| a == HIDDEN_ARG) {
+                show_main_window(&handle);
+            }
+
             spawn(move || {
+                let mut saved_settings = background_state
+                    .lock()
+                    .map(|st| Settings::from_status(&st.status))
+                    .ok();
                 loop {
                     sleep(Duration::from_millis(500));
 
@@ -306,6 +452,12 @@ pub fn run() {
                                 state.tick,
                             );
                             let _ = state.device.send_packet(&packet);
+                        }
+
+                        let current = Settings::from_status(&state.status);
+                        if saved_settings.as_ref() != Some(&current) {
+                            current.save(&settings_path);
+                            saved_settings = Some(current);
                         }
 
                         let _ = handle.emit("stats-update", state.status.clone());

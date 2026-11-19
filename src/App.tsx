@@ -102,8 +102,13 @@ export default function App() {
 
   const [activeTab, setActiveTab] = useState<"display" | "lighting">("display");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [autostart, setAutostart] = useState<boolean | null>(null);
 
   useEffect(() => {
+    invoke<boolean>("get_autostart")
+      .then(setAutostart)
+      .catch((error) => console.error("Autostart status error:", error));
+
     invoke<DeviceStatus>("get_device_status")
       .then(setStatus)
       .catch((error) => console.error("Initial status error:", error));
@@ -123,6 +128,14 @@ export default function App() {
       setStatus(updated);
     } catch (error) {
       console.error(`${command} error:`, error);
+    }
+  };
+
+  const toggleAutostart = async () => {
+    try {
+      setAutostart(await invoke<boolean>("set_autostart", { enabled: !autostart }));
+    } catch (error) {
+      console.error("set_autostart error:", error);
     }
   };
 
@@ -394,6 +407,19 @@ export default function App() {
                     onClick={() => sendCommand("set_test_mode", { enabled: !status.test_mode })}
                   >
                     {status.test_mode ? "Running (88)" : "Run test"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="control-section">
+                <div className="section-row">
+                  <h2 className="section-title">Start on login</h2>
+                  <button
+                    className={`test-toggle-btn ${autostart ? "active" : ""}`}
+                    onClick={toggleAutostart}
+                    disabled={autostart === null}
+                  >
+                    {autostart ? "On (starts in tray)" : "Off"}
                   </button>
                 </div>
               </div>

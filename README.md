@@ -22,17 +22,23 @@ A lightweight, open-source control center for Thermalright Digital ARGB and Visi
 
 ## Installation
 
-Download the latest installer for **Windows** (`.exe`, `.msi`), **macOS** (`.dmg`), or **Linux** (`.deb`, `.rpm`, `.AppImage`) from the [Releases](https://github.com/emirhannaneli/open-trcc/releases) page.
-
-### Linux USB Permissions (`udev`)
-
-On Linux, grant non-root access to the USB HID interface:
+### Linux (any distribution)
 
 ```bash
-echo 'SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="8001", MODE="0666"' | sudo tee /etc/udev/rules.d/99-thermalright.rules
-sudo udevadm control --reload-rules
-sudo udevadm trigger --subsystem-match=hidraw
+curl -fsSL https://raw.githubusercontent.com/emirhannaneli/open-trcc/main/install.sh | bash
 ```
+
+The installer puts the latest AppImage in `~/.local/share/open-trcc`, adds an app-menu entry, installs FUSE 2 if it is missing, and installs a udev rule (asks for `sudo` once) so the cooler works without root. Uninstall with `install.sh --uninstall`.
+
+`.deb` and `.rpm` packages from the [Releases](https://github.com/emirhannaneli/open-trcc/releases) page include the udev rule as well.
+
+### Windows / macOS
+
+Download the installer (`.exe`, `.msi`, or `.dmg`) from the [Releases](https://github.com/emirhannaneli/open-trcc/releases) page.
+
+### Background and start on login
+
+Closing the window keeps Open TRCC running in the system tray; use **Quit** in the tray menu to exit. It starts on login (straight to the tray) by default, which you can turn off under **Start on login**. Your lighting settings are saved and restored on every start.
 
 ## Development
 
