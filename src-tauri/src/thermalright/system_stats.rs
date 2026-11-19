@@ -86,7 +86,7 @@ impl SystemStats {
 
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = self.components.refresh(false);
+            self.components.refresh(false);
             for comp in &self.components {
                 let label = comp.label().to_lowercase();
                 if (label.contains("cpu") || label.contains("package") || label.contains("tctl"))
