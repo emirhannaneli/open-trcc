@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.4...open-trcc-v0.1.5) (2026-11-19)
+
+
+### Features
+
+* use the Thermalright square mark as the app and tray icon ([1ab0cee](https://github.com/emirhannaneli/open-trcc/commit/1ab0cee5727f428b4d66357e9465f57db750f5b5))
+
 ## [0.1.4](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.3...open-trcc-v0.1.4) (2026-11-19)
 
 
