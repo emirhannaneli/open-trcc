@@ -3,7 +3,7 @@ pub mod thermalright;
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, spawn};
 use std::time::Duration;
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 use thermalright::{
     DisplaySource, LedMode, PacketBuilder, SystemStats, TempUnit, ThermalrightDevice,
@@ -150,6 +150,56 @@ fn set_temp_unit(unit: String, state: State<'_, Arc<Mutex<AppState>>>) -> Result
     Ok(app.status.clone())
 }
 
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn setup_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItem::with_id(app, "show", "Show Open TRCC", true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide", "Hide", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &hide, &separator, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .tooltip("Open TRCC")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => show_main_window(app),
+            "hide" => {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let initial_status = DeviceStatus {
@@ -197,7 +247,15 @@ pub fn run() {
             set_power,
             set_temp_unit,
         ])
+        .on_window_event(|window, event| {
+            // Closing the window only hides it; the LED loop keeps running in the tray.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(move |app| {
+            setup_tray(app)?;
             let handle = app.handle().clone();
 
             spawn(move || {
@@ -223,12 +281,19 @@ pub fn run() {
 
                         let is_conn = state.device.refresh_device();
                         state.status.connected = is_conn;
+                        let supported = state.device.supports_led_layout();
                         if let Some(spec) = state.device.detected_spec() {
-                            state.status.device_name = spec.name.to_string();
+                            state.status.device_name = match state.device.led_style() {
+                                Some(style) if !supported => {
+                                    format!("{} (model {}, LED layout not supported yet)", spec.name, style)
+                                }
+                                _ => spec.name.to_string(),
+                            };
                             state.status.device_usb_id = format!("{:04x}:{:04x}", spec.vid, spec.pid);
                         }
 
-                        if is_conn && state.status.is_on {
+                        // Sending the 30-LED frame to another layout lights random LEDs.
+                        if is_conn && state.status.is_on && supported {
                             let packet = state.builder.build_display_packet(
                                 cpu_temp,
                                 cpu_usage,

@@ -2,8 +2,14 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceTransport {
+    /// 7-segment LED display driven with the DA DB DC DD packet (TRCC FormLED).
     HidDigital,
+    /// LCD screen over HID (TRCC FormLCD); not driven yet.
+    HidLcd,
+    /// LCD screen over USB bulk; not driven yet.
     BulkLcd,
+    /// Enumerated by TRCC but never driven by it.
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,15 +40,15 @@ pub const SUPPORTED_DEVICES: &[KnownDeviceSpec] = &[
     KnownDeviceSpec {
         vid: 0x0418,
         pid: 0x5303,
-        name: "Thermalright Digital HID (0418:5303)",
-        transport: DeviceTransport::HidDigital,
+        name: "Thermalright HID device (0418:5303, unsupported)",
+        transport: DeviceTransport::Unsupported,
         default_profile: DeviceProfile::AirCoolerDigital,
     },
     KnownDeviceSpec {
         vid: 0x0418,
         pid: 0x5304,
-        name: "Thermalright Digital HID (0418:5304)",
-        transport: DeviceTransport::HidDigital,
+        name: "Thermalright HID LCD (0418:5304)",
+        transport: DeviceTransport::HidLcd,
         default_profile: DeviceProfile::AirCoolerDigital,
     },
     KnownDeviceSpec {
@@ -86,4 +92,11 @@ pub fn lookup_device(vid: u16, pid: u16) -> Option<&'static KnownDeviceSpec> {
     SUPPORTED_DEVICES
         .iter()
         .find(|spec| spec.vid == vid && spec.pid == pid)
+}
+
+/// TRCC model numbers (init-handshake reply) that use the 30-LED layout in
+/// protocol.rs: 1 Frozen Horizon Pro, 2 Frozen Magic Pro, 3 AX120 Digital.
+/// Others (PA120 16-31, AK120 32, LF8 48/49, ...) have different layouts.
+pub fn is_supported_led_style(style: u8) -> bool {
+    matches!(style, 1..=3)
 }
