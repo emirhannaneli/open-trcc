@@ -269,6 +269,19 @@ fn enable_autostart_on_first_run(app: &tauri::App, config_dir: &std::path::Path)
     }
 }
 
+/// Sends an all-black frame so the cooler doesn't freeze on the last frame
+/// once we stop updating it. Saved settings are untouched, so the next start
+/// lights up with the user's choices again.
+fn blank_display(app: &tauri::AppHandle) {
+    let state = app.state::<Arc<Mutex<AppState>>>();
+    let Ok(mut st) = state.lock() else { return };
+    st.builder.mode = LedMode::Off;
+    if st.device.supports_led_layout() {
+        let packet = st.builder.build_display_packet(0.0, 0.0, 0.0, 0.0, st.tick);
+        let _ = st.device.send_packet(&packet);
+    }
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -467,6 +480,12 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            // Covers tray Quit and any other orderly shutdown.
+            if let tauri::RunEvent::Exit = event {
+                blank_display(app);
+            }
+        });
 }
