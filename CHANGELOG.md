@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.5...open-trcc-v0.1.6) (2026-11-19)
+
+
+### Bug Fixes
+
+* **install:** stop the running app process before updating so the new version starts ([63b9c44](https://github.com/emirhannaneli/open-trcc/commit/63b9c44b7ba76321199481f0afe386dd0abdefab))
+
 ## [0.1.5](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.4...open-trcc-v0.1.5) (2026-11-19)
 
 
