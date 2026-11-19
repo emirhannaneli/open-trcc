@@ -1,6 +1,6 @@
 [package]
 name = "open-trcc"
-version = "0.1.5"
+version = "0.1.6"
 description = "Open-source control center for Thermalright cooler displays"
 authors = ["Emirhan Naneli"]
 edition = "2024"
