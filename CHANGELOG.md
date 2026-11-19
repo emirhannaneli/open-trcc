@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.4](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.3...open-trcc-v0.1.4) (2026-11-19)
+
+
+### Features
+
+* give the app its own icon instead of the Tauri template defaults ([30ed038](https://github.com/emirhannaneli/open-trcc/commit/30ed038e0b9ad117cf8a19e7331e7157d6cb760c))
+* start on login, single instance, saved settings, and a Linux installer ([d110724](https://github.com/emirhannaneli/open-trcc/commit/d1107246649be2f6c08b013d52cbe9ff6d9486a3))
+
+
+### Bug Fixes
+
+* blank the cooler display when the app quits instead of freezing on the last frame ([04ff5c9](https://github.com/emirhannaneli/open-trcc/commit/04ff5c9ca7712dbc1c607fc7b5b1e7362f6b9cb6))
+
 ## [0.1.3](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.2...open-trcc-v0.1.3) (2026-11-19)
 
 
