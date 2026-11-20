@@ -60,6 +60,8 @@ uninstall() {
   info "Removing files"
   rm -f "$APPIMAGE" "$BIN_DIR/$APP" "$DESKTOP_FILE" "$ICON_FILE"
   rm -f "$CONFIG_HOME/autostart/$APP.desktop" "$CONFIG_HOME"/autostart/open-trcc*.desktop
+  rm -f "$CONFIG_HOME/systemd/user/graphical-session.target.wants/$APP.service" \
+    "$CONFIG_HOME/systemd/user/$APP.service"
   rmdir "$INSTALL_DIR" 2>/dev/null || true
   if [ -f "$UDEV_RULE" ]; then
     info "Removing udev rule (sudo)"

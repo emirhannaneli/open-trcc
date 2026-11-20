@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod session_autostart;
 pub mod thermalright;
 
 use std::sync::{Arc, Mutex};
@@ -234,6 +236,24 @@ impl Settings {
 /// Passed by the autostart entry so the app boots straight into the tray.
 const HIDDEN_ARG: &str = "--hidden";
 
+/// Mirror the XDG autostart state into a systemd user unit, so compositors that
+/// skip `~/.config/autostart` (Hyprland, Sway, ...) still launch us on login.
+#[cfg(target_os = "linux")]
+fn sync_session_unit<R: tauri::Runtime>(app: &impl Manager<R>, enabled: bool) {
+    let result = if enabled {
+        let appimage = app.env().appimage;
+        session_autostart::enable(appimage.as_deref().map(std::path::Path::new), HIDDEN_ARG)
+    } else {
+        session_autostart::disable()
+    };
+    if let Err(e) = result {
+        eprintln!("[open-trcc] could not update systemd autostart unit: {}", e);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sync_session_unit<R: tauri::Runtime>(_app: &impl Manager<R>, _enabled: bool) {}
+
 #[tauri::command]
 fn get_autostart(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -250,22 +270,28 @@ fn set_autostart(enabled: bool, app: tauri::AppHandle) -> Result<bool, String> {
         launcher.disable()
     }
     .map_err(|e| e.to_string())?;
-    launcher.is_enabled().map_err(|e| e.to_string())
+    let enabled = launcher.is_enabled().map_err(|e| e.to_string())?;
+    sync_session_unit(&app, enabled);
+    Ok(enabled)
 }
 
 /// Turn autostart on the first time the app runs; afterwards respect the user's choice.
 fn enable_autostart_on_first_run(app: &tauri::App, config_dir: &std::path::Path) {
     use tauri_plugin_autostart::ManagerExt;
     let marker = config_dir.join("autostart-initialized");
-    if marker.exists() {
-        return;
-    }
-    match app.autolaunch().enable() {
-        Ok(()) => {
-            let _ = std::fs::create_dir_all(config_dir);
-            let _ = std::fs::write(&marker, "");
+    if !marker.exists() {
+        match app.autolaunch().enable() {
+            Ok(()) => {
+                let _ = std::fs::create_dir_all(config_dir);
+                let _ = std::fs::write(&marker, "");
+            }
+            Err(e) => eprintln!("[open-trcc] could not enable autostart: {}", e),
         }
-        Err(e) => eprintln!("[open-trcc] could not enable autostart: {}", e),
+    }
+    // Every start: brings existing installs up to date and refreshes the unit's
+    // path if the AppImage moved.
+    if let Ok(enabled) = app.autolaunch().is_enabled() {
+        sync_session_unit(app, enabled);
     }
 }
 
@@ -370,8 +396,11 @@ pub fn run() {
     tauri::Builder::default()
         // Must be registered first: a second launch just focuses the running one,
         // so two processes never fight over the HID device.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main_window(app);
+        // A login launch (XDG entry and systemd unit can both fire) stays in the tray.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if !args.iter().any(|a| a == HIDDEN_ARG) {
+                show_main_window(app);
+            }
         }))
         .plugin(
             tauri_plugin_autostart::Builder::new()
