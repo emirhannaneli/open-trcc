@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.7](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.6...open-trcc-v0.1.7) (2026-11-20)
+
+
+### Bug Fixes
+
+* **autostart:** start with the graphical session on compositors that ignore XDG autostart ([8d29784](https://github.com/emirhannaneli/open-trcc/commit/8d29784a6e86bb3aab23f9ac93c5713d2a1e8aec))
+* **autostart:** start with the graphical session on compositors that ignore XDG autostart ([7439310](https://github.com/emirhannaneli/open-trcc/commit/7439310ece643e5cbdb64a424b0dfe05fb548dc7))
+
 ## [0.1.6](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.5...open-trcc-v0.1.6) (2026-11-19)
 
 
