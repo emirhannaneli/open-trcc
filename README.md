@@ -32,7 +32,7 @@ The installer puts the latest AppImage in `~/.local/share/open-trcc`, adds an ap
 
 `.deb` and `.rpm` packages from the [Releases](https://github.com/emirhannaneli/open-trcc/releases) page include the udev rule as well.
 
-**Case lighting sync.** The installer also installs [OpenRGB](https://openrgb.org) (from your package manager, or OpenRGB's official AppImage on releases that don't package it, such as Ubuntu 24.04 and Debian 12/13) and loads the `i2c-dev` kernel module (skip with `install.sh --no-openrgb`). Open TRCC then starts an OpenRGB server on its own and mirrors the display's lighting to your case fans. Set the case ARGB hub to its "MB sync" mode and connect it to the motherboard's 5V 3-pin ARGB header (not the 12V 4-pin RGB header). You can turn the sync off in the app.
+**Case lighting sync.** The installer also installs [OpenRGB](https://openrgb.org) (from your package manager, or OpenRGB's official AppImage on releases that don't package it, such as Ubuntu 24.04 and Debian 12/13) and loads the `i2c-dev` kernel module (skip with `install.sh --no-openrgb`). Open TRCC then starts an OpenRGB server on its own and mirrors the display's lighting to your case fans. Set the case ARGB hub to its "MB sync" mode and connect it to the motherboard's 5V 3-pin ARGB header (not the 12V 4-pin RGB header). You can turn the sync off in the app. On Windows and macOS, run an OpenRGB server yourself (OpenRGB → SDK Server → Start Server) and Open TRCC connects to it. Uninstalling Open TRCC leaves OpenRGB in place (including, where the installer used it, the AppImage at `/usr/local/bin/openrgb` and `/etc/udev/rules.d/60-openrgb.rules`).
 
 ### Windows / macOS
 

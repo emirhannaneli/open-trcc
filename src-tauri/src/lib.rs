@@ -576,10 +576,9 @@ pub fn run() {
                 blank_display(app);
                 // Clone the handle so the state lock is released while shutdown joins the thread.
                 let state = app.state::<Arc<Mutex<AppState>>>();
-                let sync = state.lock().ok().map(|st| st.case_sync.clone());
-                if let Some(sync) = sync {
-                    sync.shutdown();
-                }
+                // A poisoned lock must not skip shutdown (it reaps our OpenRGB child).
+                let sync = state.lock().unwrap_or_else(|e| e.into_inner()).case_sync.clone();
+                sync.shutdown();
             }
         });
 }

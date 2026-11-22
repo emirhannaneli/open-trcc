@@ -157,10 +157,8 @@ install_openrgb_release() {
         rules=1
       fi
     fi
-    if [ "$rules" -eq 1 ]; then
-      as_root udevadm control --reload-rules 2>/dev/null || true
-      as_root udevadm trigger --subsystem-match=i2c-dev --subsystem-match=hidraw --subsystem-match=usb 2>/dev/null || true
-    else
+    # ensure_openrgb reloads and triggers udev afterwards.
+    if [ "$rules" -eq 0 ]; then
       warn "OpenRGB's udev rules were not installed, so it may not see your hardware without root."
     fi
   else
@@ -199,8 +197,13 @@ ensure_openrgb() {
     if printf 'i2c-dev\n' | as_root tee "$MODULES_CONF" >/dev/null; then :
     else warn "Could not write $MODULES_CONF"; fi
   fi
+  # Apply OpenRGB's udev rules (package or AppImage path) to devices that
+  # are already present: reload first, then load i2c-dev so its nodes are
+  # created under the new rules, then re-trigger existing HID/USB/i2c nodes.
+  as_root udevadm control --reload-rules || warn "Could not reload udev rules."
   as_root modprobe i2c-dev || warn "Could not load the i2c-dev module; case lighting sync may not work until reboot."
-  as_root udevadm control --reload-rules 2>/dev/null || true
+  as_root udevadm trigger --subsystem-match=hidraw --subsystem-match=usb --subsystem-match=i2c-dev \
+    || warn "Could not re-apply udev rules; replug or reboot if OpenRGB does not see your hardware."
   return 0
 }
 

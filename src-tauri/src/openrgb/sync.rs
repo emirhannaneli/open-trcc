@@ -25,6 +25,13 @@ const SPAWN_WINDOW: Duration = Duration::from_secs(15);
 /// Shortened so the give-up test stays fast.
 #[cfg(test)]
 const SPAWN_WINDOW: Duration = Duration::from_millis(1500);
+/// How long a server we spawned may expose no target controllers (since
+/// connect or the last device list update) before we stop it.
+#[cfg(not(test))]
+const NO_TARGET_GRACE: Duration = Duration::from_secs(30);
+/// Shortened so the no-target test stays fast.
+#[cfg(test)]
+const NO_TARGET_GRACE: Duration = Duration::from_millis(1000);
 const BACKOFF_MIN: Duration = Duration::from_secs(2);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
@@ -219,10 +226,19 @@ impl CaseSync {
     }
 }
 
-/// `openrgb --server`, only on Linux and only if `openrgb` is on PATH.
+/// `openrgb --server` bound to localhost (the SDK is unauthenticated), only
+/// on Linux and only if `openrgb` is on PATH.
 #[cfg(target_os = "linux")]
 fn default_spawn() -> Option<Vec<String>> {
-    on_path("openrgb").then(|| vec!["openrgb".to_string(), "--server".to_string()])
+    on_path("openrgb").then(spawn_command)
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_command() -> Vec<String> {
+    ["openrgb", "--server", "--server-host", "127.0.0.1"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -259,6 +275,11 @@ struct Worker {
     /// to whatever comes back instead of spawning our own server).
     connected_once: bool,
     spawn_deadline: Option<Instant>,
+    /// When our spawned server, still exposing no targets, gets stopped.
+    no_target_deadline: Option<Instant>,
+    /// Our server was stopped for lack of targets: stay idle until the next
+    /// enable episode.
+    parked: bool,
     next_attempt: Instant,
     backoff: Duration,
 }
@@ -276,6 +297,8 @@ impl Worker {
             spawned: false,
             connected_once: false,
             spawn_deadline: None,
+            no_target_deadline: None,
+            parked: false,
             next_attempt: Instant::now(),
             backoff: BACKOFF_MIN,
         }
@@ -295,6 +318,9 @@ impl Worker {
                 self.reset_episode();
                 continue;
             }
+            if self.parked {
+                continue;
+            }
             if self.client.is_none() {
                 if Instant::now() >= self.next_attempt {
                     self.attempt();
@@ -311,10 +337,13 @@ impl Worker {
     fn wait(&self) -> (bool, bool, Option<(u8, u8, u8)>) {
         let mut g = self.shared.lock();
         if !g.dirty && !g.shutdown {
-            let timeout = if g.enabled && self.client.is_none() {
-                self.next_attempt
-                    .saturating_duration_since(Instant::now())
-                    .min(IDLE_WAIT)
+            let now = Instant::now();
+            let timeout = if self.parked {
+                IDLE_WAIT
+            } else if g.enabled && self.client.is_none() {
+                self.next_attempt.saturating_duration_since(now).min(IDLE_WAIT)
+            } else if let Some(d) = self.no_target_deadline {
+                d.saturating_duration_since(now).min(IDLE_WAIT)
             } else {
                 IDLE_WAIT
             };
@@ -338,6 +367,8 @@ impl Worker {
         self.spawned = false;
         self.connected_once = false;
         self.spawn_deadline = None;
+        self.no_target_deadline = None;
+        self.parked = false;
         self.next_attempt = Instant::now();
         self.backoff = BACKOFF_MIN;
     }
@@ -434,7 +465,11 @@ impl Worker {
         Ok(())
     }
 
-    fn publish_connected(&self) {
+    /// Publishes the status after connect or a device list update, and arms
+    /// the no-target stop if the server is ours and has nothing to drive.
+    fn publish_connected(&mut self) {
+        self.no_target_deadline =
+            (self.targets.is_empty() && self.child.is_some()).then(|| Instant::now() + NO_TARGET_GRACE);
         if self.targets.is_empty() {
             self.shared.set_status(NO_MOTHERBOARD);
         } else {
@@ -455,6 +490,22 @@ impl Worker {
         }
         if !c.is_alive() {
             return self.fail(CONNECTING);
+        }
+        if self.no_target_deadline.is_some_and(|d| Instant::now() >= d) {
+            self.no_target_deadline = None;
+            // Never touch a server we didn't spawn: if ours already exited,
+            // whatever we are connected to is someone else's.
+            self.reap_exited_child();
+            if self.child.is_none() {
+                self.client = Some(c);
+                return;
+            }
+            self.client = Some(c);
+            self.disconnect();
+            self.stop_child();
+            self.parked = true;
+            self.shared.set_status(NO_MOTHERBOARD);
+            return;
         }
         if let Some(rgb) = color
             && self.last_sent != Some(rgb)
@@ -555,7 +606,8 @@ fn spawn_child(cmd: &[String]) -> std::io::Result<Child> {
                 }
                 // The parent may have died before prctl took effect.
                 if libc::getppid() != parent {
-                    return Err(std::io::Error::other("parent exited during spawn"));
+                    // No allocation here (between fork and exec).
+                    return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
                 }
                 Ok(())
             });
@@ -743,6 +795,60 @@ mod tests {
         assert_eq!(colour_of(&l[l.len() - 2].1).1, Some((200, 100, 50)));
         assert!(!s.child_info().2);
         assert!(!proc_alive(pid));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawned_server_listens_on_localhost_only() {
+        assert_eq!(spawn_command(), ["openrgb", "--server", "--server-host", "127.0.0.1"]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn stops_spawned_server_without_targets() {
+        let addr = free_addr();
+        let s = CaseSync::start_with(true, addr.clone(), Some(vec!["sleep".into(), "60".into()]));
+        let deadline = Instant::now() + T;
+        while s.child_info().0 == 0 {
+            assert!(Instant::now() < deadline);
+            s.wait_status(Duration::from_millis(50), |_| false);
+        }
+        let pid = s.child_info().1.unwrap();
+        // Our "spawned server" only exposes a keyboard.
+        let kb = Ctl::new(5, "Keyboard", &["Direct"], &[(10, 10, 10)]);
+        let srv = FakeServer::start_on(&addr, vec![Dev::Synthetic(kb)], false);
+        assert_eq!(s.wait_status(T, |st| st != "Connecting…"), "No supported motherboard lighting");
+        let connected = Instant::now();
+        assert!(proc_alive(pid));
+        // After the grace window our child is stopped and the client dropped.
+        assert!(srv.wait_closed(1, T));
+        assert!(connected.elapsed() >= NO_TARGET_GRACE / 2, "{:?}", connected.elapsed());
+        let deadline = Instant::now() + T;
+        while s.child_info().2 {
+            assert!(Instant::now() < deadline, "spawned server still running");
+            s.wait_status(Duration::from_millis(50), |_| false);
+        }
+        assert!(!proc_alive(pid));
+        // No respawn and no reconnect for the rest of this enable episode.
+        s.wait_status(SPAWN_WINDOW, |st| st != "No supported motherboard lighting");
+        assert_eq!(s.status(), "No supported motherboard lighting");
+        assert_eq!(s.child_info().0, 1);
+        assert_eq!(srv.connections(), 1);
+        s.shutdown();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn keeps_foreign_server_without_targets() {
+        let kb = Ctl::new(5, "Keyboard", &["Direct"], &[(10, 10, 10)]);
+        let srv = FakeServer::start(vec![Dev::Synthetic(kb)]);
+        let s = CaseSync::start_with(true, srv.addr.clone(), Some(vec!["false".into()]));
+        assert_eq!(s.wait_status(T, |st| st != "Connecting…"), "No supported motherboard lighting");
+        // Well past the grace window, the connection to a server we didn't spawn stays.
+        assert!(!srv.wait_closed(1, NO_TARGET_GRACE * 2));
+        assert_eq!(s.child_info().0, 0);
+        assert_eq!(s.status(), "No supported motherboard lighting");
+        s.shutdown();
     }
 
     #[test]

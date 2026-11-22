@@ -20,7 +20,7 @@ zones JRGB1, JRGB2, JRAINBOW1, JRAINBOW2, ONBOARD.
 ## Goals
 
 - Every motherboard ARGB zone OpenRGB exposes follows the display colour at the
-  display's frame rate (125 ms, see `FRAME_MS`).
+  display's frame rate (50 ms, see `FRAME_MS`).
 - Works on every motherboard OpenRGB supports. Open TRCC holds no vendor protocol.
 - Users do nothing beyond running the installer and flipping one toggle.
 - Without OpenRGB, Open TRCC behaves exactly as today: no errors, no prompts.
@@ -77,11 +77,13 @@ remove.
 
 ### Code layout
 
-- `src-tauri/src/openrgb.rs`: a small blocking client for the OpenRGB SDK
+- `src-tauri/src/openrgb/{protocol,client,sync}.rs`: packet encoding and
+  parsing (`protocol`), a small blocking client for the OpenRGB SDK
   protocol (documented, our own MIT code). Needs: protocol version handshake,
   set client name, controller count, controller data (parse type, name, modes,
   zones with type and leds_min/max/count), resize zone, set custom (direct) mode,
-  update zone LEDs. TCP with short connect/read timeouts.
+  update zone LEDs. TCP with short connect/read timeouts (`client`). The sync
+  thread below lives in `sync`.
 - `PacketBuilder` gains a function returning the sync colour for a frame
   (shares the colour logic already in `build_display_packet`).
 - A dedicated sync thread owns the client. The device loop hands it the latest
@@ -92,13 +94,19 @@ remove.
 
 1. When sync is on and not connected, try `127.0.0.1:6742`.
 2. If nothing listens and the `openrgb` binary is on PATH (Linux), spawn
-   `openrgb --server` headless as a child, then retry for a few seconds.
-   An already-running OpenRGB (GUI or server) is used as is and never killed.
+   `openrgb --server --server-host 127.0.0.1` headless as a child (localhost
+   only: the SDK is unauthenticated), then retry for a few seconds. Spawned
+   at most once per enable episode. An already-running OpenRGB (GUI or
+   server) is used as is and never killed.
 3. On connect: list controllers, keep those of type Motherboard (0) that
    have a mode named `Direct`; switch each to that mode (not SETCUSTOMMODE,
    which silently falls back to modes that may write controller flash); resize
    any resizable zone whose LED count is 0 to its `leds_max`; then drive all
    zones. Motherboard controllers without `Direct` are skipped, never written.
+   If the server is the one we spawned and it has no such controller for 30 s
+   after connect or the last device list update, stop it, keep the status
+   "No supported motherboard lighting" and don't respawn until sync is toggled
+   or the app restarts. A server we didn't spawn is never stopped.
 4. Any I/O error → drop the connection, retry with backoff (2 s, capped at 30 s).
 5. Sync runs whether or not the cooler is connected: the case follows the
    chosen effect even when the display is unplugged or unsupported. The
@@ -108,11 +116,16 @@ remove.
 
 ### Installer (`install.sh`)
 
-- Install OpenRGB with the system package manager, the same way `ensure_fuse2`
-  does (pacman, apt, dnf, zypper, xbps, apk). Skip if `openrgb` is already on
-  PATH. If no package is available, warn and continue: sync just stays off.
-- The OpenRGB package ships its udev rules (`60-openrgb.rules`), which give the
-  desktop user access to the motherboard controller; reload udev after install.
+- Install OpenRGB with the system package manager (pacman, apt, dnf, zypper,
+  xbps). Skip if `openrgb` is already on PATH. If no package is available
+  (Ubuntu 24.04, Debian 12/13), install OpenRGB's official AppImage to
+  `/usr/local/bin/openrgb` and, on apt systems, the udev rules
+  (`60-openrgb.rules`) extracted from OpenRGB's release .deb into
+  `/etc/udev/rules.d/`. Any failure warns and continues: sync just stays off.
+- The udev rules give the desktop user access to the motherboard controller.
+  After OpenRGB is present: reload udev rules, load `i2c-dev`, then
+  `udevadm trigger` hidraw/usb/i2c-dev so already-present devices get them
+  without a replug or reboot.
 - Load `i2c-dev` now and on every boot (`/etc/modules-load.d/open-trcc.conf`),
   so boards whose RGB controller sits on SMBus (many ASUS/Gigabyte/ASRock)
   are visible to OpenRGB. No bootloader changes (`acpi_enforce_resources=lax`
@@ -120,15 +133,15 @@ remove.
 - Any OpenRGB version the distro ships is accepted; the client requests the
   lowest protocol version that has the calls above, so 0.9 servers work.
 - `--no-openrgb` flag skips this step.
-- Uninstall leaves OpenRGB alone (the user may use it for other things) but
+- Uninstall leaves OpenRGB alone (the user may use it for other things,
+  including the AppImage and its udev rules) but
   removes `/etc/modules-load.d/open-trcc.conf`.
 - The .deb gets `Recommends: openrgb`. .rpm, Windows and macOS packages are
   unchanged; there the user installs OpenRGB themselves.
 
 ## Left to the builder
 
-- Exact package names per distro, and whether to fall back to OpenRGB's
-  official AppImage where no package exists.
+- Exact package names per distro.
 - Which SDK protocol version to request (lowest that supports the calls above).
 - How the status line is delivered (extend `DeviceStatus` vs. its own event).
 - Test strategy for the client: protocol encoding/decoding against captured
