@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.1.8](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.7...open-trcc-v0.1.8) (2026-11-22)
+
+
+### Features
+
+* **install:** fall back to the official OpenRGB AppImage where no package exists ([ce04fa8](https://github.com/emirhannaneli/open-trcc/commit/ce04fa8f5d11be7389c3d81ec6e903d98385e280))
+* **install:** install OpenRGB and load i2c-dev for case sync ([c51ca92](https://github.com/emirhannaneli/open-trcc/commit/c51ca923e87b1595d2c504f1bba031383c54af8b))
+* **led:** expose the frame's colour for case sync ([ba614c8](https://github.com/emirhannaneli/open-trcc/commit/ba614c81a1182eaa2dbb1666a8160df709fe0059))
+* **openrgb:** case sync thread with server lifecycle ([a7ef38e](https://github.com/emirhannaneli/open-trcc/commit/a7ef38e41daf10895e6d85532250b3cba762f2e7))
+* **openrgb:** minimal SDK client ([b3eb2ca](https://github.com/emirhannaneli/open-trcc/commit/b3eb2ca3b31f87ed66052f18f09608fe01b51906))
+* sync case lighting with the display through OpenRGB ([46b9333](https://github.com/emirhannaneli/open-trcc/commit/46b9333b3868d468385e09c2a935048fe17ab2bc))
+* sync case lighting with the display through OpenRGB ([d77340c](https://github.com/emirhannaneli/open-trcc/commit/d77340c96057aa83ec3263fc7488abb9d6968858))
+* **ui:** explain case lighting sync requirements ([6268e7b](https://github.com/emirhannaneli/open-trcc/commit/6268e7b4a55a4fc68c03d5e563960d71c4ecf487))
+
+
+### Bug Fixes
+
+* **led:** animate effects at 8 fps with TRCC's step sizes ([d1ebc34](https://github.com/emirhannaneli/open-trcc/commit/d1ebc34d30a748e4207f6dbf64dcbb1d8c08ba0b))
+* **led:** send LED frames at 20 fps ([346427b](https://github.com/emirhannaneli/open-trcc/commit/346427b474eef917137fb7a744c54afbd58615dc))
+* **led:** smooth effect transitions at 20 fps ([3d6c885](https://github.com/emirhannaneli/open-trcc/commit/3d6c8858eaf554566601af82b3d9598a379835a2))
+* **openrgb:** bind spawned server to localhost, stop it when nothing to drive ([acfada1](https://github.com/emirhannaneli/open-trcc/commit/acfada18dc08613ac049a190d84bad223ab21008))
+* **openrgb:** kill spawned server when its parent dies (PR_SET_PDEATHSIG) ([f30cfae](https://github.com/emirhannaneli/open-trcc/commit/f30cfae6fe515cd9874fd504650113b5afa91dba))
+* **openrgb:** non-blocking update check and validated replies ([6c511ba](https://github.com/emirhannaneli/open-trcc/commit/6c511baf5aba33f002e7097b9925993a06668898))
+* **openrgb:** reap spawned child on worker panic; gate Linux-only spawn code and tests ([fbaef07](https://github.com/emirhannaneli/open-trcc/commit/fbaef078f50feb44bfab04dd273d1d63bfce182d))
+
 ## [0.1.7](https://github.com/emirhannaneli/open-trcc/compare/open-trcc-v0.1.6...open-trcc-v0.1.7) (2026-11-20)
 
 
