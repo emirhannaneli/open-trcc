@@ -1,6 +1,10 @@
 //! Minimal OpenRGB SDK client (protocol version 3), used to mirror the case
 //! lighting colour onto a motherboard header.
-#![allow(dead_code)]
 
 pub mod client;
+#[cfg(test)]
+mod fake;
 pub mod protocol;
+// Consumed by the device loop from the next task on.
+#[allow(dead_code)]
+pub mod sync;

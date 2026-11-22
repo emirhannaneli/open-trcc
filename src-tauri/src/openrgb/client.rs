@@ -97,6 +97,12 @@ impl Client {
         std::mem::take(&mut self.list_updated)
     }
 
+    /// False once any error has marked the connection dead (a closed peer is
+    /// noticed by `take_device_list_update`).
+    pub fn is_alive(&self) -> bool {
+        !self.dead
+    }
+
     fn drain_buffered(&mut self) -> Result<(), String> {
         self.stream.set_nonblocking(true).map_err(|e| e.to_string())?;
         let r = self.drain_buffered_inner();
@@ -201,58 +207,9 @@ fn parse_header(hdr: &[u8; p::HEADER_LEN]) -> Result<(u32, usize), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fake::{fake_server, read_packet, scripted_server};
     use super::*;
-    use std::net::TcpListener;
-    use std::thread::{self, JoinHandle};
-
-    const FIXTURE: &[u8] = include_bytes!("fixtures/mystic_light_v3.bin");
-
-    fn read_packet(s: &mut TcpStream) -> Option<(u32, u32, Vec<u8>)> {
-        let mut h = [0u8; 16];
-        s.read_exact(&mut h).ok()?;
-        let dev = u32::from_le_bytes(h[4..8].try_into().unwrap());
-        let id = u32::from_le_bytes(h[8..12].try_into().unwrap());
-        let len = u32::from_le_bytes(h[12..16].try_into().unwrap()) as usize;
-        let mut pl = vec![0u8; len];
-        s.read_exact(&mut pl).ok()?;
-        Some((dev, id, pl))
-    }
-
-    /// Fake server answering the handshake with `version`, then serving one fixture controller.
-    fn fake_server(
-        version: u32,
-        send_update_after_connect: bool,
-    ) -> (String, JoinHandle<()>) {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap().to_string();
-        let h = thread::spawn(move || {
-            let (mut s, _) = l.accept().unwrap();
-            while let Some((dev, id, _)) = read_packet(&mut s) {
-                match id {
-                    p::REQUEST_PROTOCOL_VERSION => {
-                        s.write_all(&p::encode(0, id, &version.to_le_bytes())).unwrap()
-                    }
-                    p::SET_CLIENT_NAME => {
-                        if send_update_after_connect {
-                            s.write_all(&p::encode(0, p::DEVICE_LIST_UPDATED, &[])).unwrap();
-                        }
-                    }
-                    p::REQUEST_CONTROLLER_COUNT => {
-                        // A list update arriving mid-request must be skipped.
-                        if send_update_after_connect {
-                            s.write_all(&p::encode(0, p::DEVICE_LIST_UPDATED, &[])).unwrap();
-                        }
-                        s.write_all(&p::encode(0, id, &1u32.to_le_bytes())).unwrap()
-                    }
-                    p::REQUEST_CONTROLLER_DATA => {
-                        s.write_all(&p::encode(dev, id, FIXTURE)).unwrap()
-                    }
-                    _ => {}
-                }
-            }
-        });
-        (addr, h)
-    }
+    use std::thread;
 
     #[test]
     fn handshake_and_list_controllers() {
@@ -271,25 +228,6 @@ mod tests {
         assert_eq!(c.controllers().unwrap().len(), 1);
         assert!(c.take_device_list_update());
         assert!(!c.take_device_list_update());
-    }
-
-    /// Server that completes the handshake, runs `after`, then holds the
-    /// socket open until the test signals it is done.
-    fn scripted_server(
-        after: impl FnOnce(&mut TcpStream) + Send + 'static,
-    ) -> (String, std::sync::mpsc::Sender<()>, JoinHandle<()>) {
-        let l = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = l.local_addr().unwrap().to_string();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let h = thread::spawn(move || {
-            let (mut s, _) = l.accept().unwrap();
-            read_packet(&mut s).unwrap();
-            s.write_all(&p::encode(0, p::REQUEST_PROTOCOL_VERSION, &6u32.to_le_bytes())).unwrap();
-            read_packet(&mut s).unwrap();
-            after(&mut s);
-            rx.recv().ok();
-        });
-        (addr, tx, h)
     }
 
     #[test]
