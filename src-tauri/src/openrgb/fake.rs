@@ -321,6 +321,8 @@ fn serve(mut s: TcpStream, st: &Arc<(Mutex<State>, Condvar)>) {
 }
 
 /// Reserves a free loopback port with nothing listening on it.
+/// Only the Linux-only spawn tests need it.
+#[cfg(target_os = "linux")]
 pub fn free_addr() -> String {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     l.local_addr().unwrap().to_string()

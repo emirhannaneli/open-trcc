@@ -49,6 +49,9 @@ struct Slot {
     child_pid: Option<u32>,
     #[cfg_attr(not(test), allow(dead_code))]
     child_running: bool,
+    /// Test-only trigger that makes the worker panic on its next wake-up.
+    #[cfg(test)]
+    panic_now: bool,
 }
 
 struct Shared {
@@ -92,8 +95,12 @@ fn stop(shared: &Shared, handle: &Mutex<Option<JoinHandle<()>>>) {
         shared.wake.notify_all();
     }
     let h = handle.lock().unwrap_or_else(|e| e.into_inner()).take();
-    if let Some(h) = h {
-        h.join().ok();
+    if let Some(h) = h
+        && h.join().is_err()
+    {
+        // The worker died: its Drop already reaped our child. Don't leave a
+        // stale "Connected" behind.
+        shared.set_status(NOT_FOUND);
     }
 }
 
@@ -106,9 +113,7 @@ pub struct CaseSync {
 
 impl CaseSync {
     pub fn start(enabled: bool) -> CaseSync {
-        let spawn = (cfg!(target_os = "linux") && on_path("openrgb"))
-            .then(|| vec!["openrgb".to_string(), "--server".to_string()]);
-        Self::start_with(enabled, SERVER_ADDR.to_string(), spawn)
+        Self::start_with(enabled, SERVER_ADDR.to_string(), default_spawn())
     }
 
     pub(crate) fn start_with(enabled: bool, addr: String, spawn: Option<Vec<String>>) -> CaseSync {
@@ -122,6 +127,8 @@ impl CaseSync {
                 spawns: 0,
                 child_pid: None,
                 child_running: false,
+                #[cfg(test)]
+                panic_now: false,
             }),
             wake: Condvar::new(),
             changed: Condvar::new(),
@@ -129,7 +136,15 @@ impl CaseSync {
         let worker = Worker::new(shared.clone(), addr, spawn);
         let handle = thread::Builder::new()
             .name("openrgb-sync".into())
-            .spawn(move || worker.run())
+            .spawn(move || {
+                let shared = worker.shared.clone();
+                // On a panic, unwinding drops the worker (reaping our child);
+                // then report the failure instead of a stale status.
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run()));
+                if r.is_err() {
+                    shared.set_status(NOT_FOUND);
+                }
+            })
             .expect("spawn openrgb sync thread");
         CaseSync {
             inner: Arc::new(Inner {
@@ -192,6 +207,13 @@ impl CaseSync {
         }
     }
 
+    #[cfg(test)]
+    fn trigger_panic(&self) {
+        let sh = &self.inner.shared;
+        sh.lock().panic_now = true;
+        sh.wake.notify_all();
+    }
+
     /// `(times spawned, last child pid, child still unreaped)`.
     #[cfg(test)]
     fn child_info(&self) -> (u32, Option<u32>, bool) {
@@ -200,6 +222,18 @@ impl CaseSync {
     }
 }
 
+/// `openrgb --server`, only on Linux and only if `openrgb` is on PATH.
+#[cfg(target_os = "linux")]
+fn default_spawn() -> Option<Vec<String>> {
+    on_path("openrgb").then(|| vec!["openrgb".to_string(), "--server".to_string()])
+}
+
+#[cfg(not(target_os = "linux"))]
+fn default_spawn() -> Option<Vec<String>> {
+    None
+}
+
+#[cfg(target_os = "linux")]
 fn on_path(exe: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|d| d.join(exe).is_file()))
@@ -293,6 +327,11 @@ impl Worker {
                 .wait_timeout(g, timeout)
                 .unwrap_or_else(|e| e.into_inner())
                 .0;
+        }
+        #[cfg(test)]
+        if g.panic_now {
+            drop(g);
+            panic!("test-triggered sync worker panic");
         }
         g.dirty = false;
         (g.enabled, g.shutdown, g.color)
@@ -495,6 +534,14 @@ impl Worker {
     }
 }
 
+impl Drop for Worker {
+    /// Also runs while unwinding, so a panicking worker never orphans the
+    /// server it spawned.
+    fn drop(&mut self) {
+        self.stop_child();
+    }
+}
+
 fn direct_mode(ctl: &super::protocol::Controller) -> Option<usize> {
     if ctl.kind != 0 {
         return None;
@@ -504,7 +551,9 @@ fn direct_mode(ctl: &super::protocol::Controller) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::super::fake::{Ctl, Dev, FakeServer, free_addr};
+    use super::super::fake::{Ctl, Dev, FakeServer};
+    #[cfg(target_os = "linux")]
+    use super::super::fake::free_addr;
     use super::super::protocol as p;
     use super::*;
     use std::time::Instant;
@@ -529,6 +578,7 @@ mod tests {
         (n, if same { first } else { None })
     }
 
+    #[cfg(target_os = "linux")]
     fn proc_alive(pid: u32) -> bool {
         // A reaped child has no /proc entry; a zombie would still show one.
         std::path::Path::new(&format!("/proc/{pid}")).exists()
@@ -620,6 +670,7 @@ mod tests {
         s.shutdown();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn uses_existing_server_without_spawning() {
         let srv = FakeServer::start(vec![Dev::Fixture]);
@@ -629,6 +680,7 @@ mod tests {
         assert_eq!(s.child_info().0, 0);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn gives_up_after_spawn_window() {
         let addr = free_addr();
@@ -643,6 +695,7 @@ mod tests {
         s.shutdown();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn shutdown_sends_black_and_stops_child() {
         let addr = free_addr();
@@ -700,5 +753,28 @@ mod tests {
         }
         assert!(t.elapsed() < Duration::from_millis(50), "{:?}", t.elapsed());
         s.shutdown();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn worker_panic_reaps_child() {
+        let addr = free_addr();
+        let s = CaseSync::start_with(true, addr, Some(vec!["sleep".into(), "60".into()]));
+        let deadline = Instant::now() + T;
+        while s.child_info().0 == 0 {
+            assert!(Instant::now() < deadline);
+            s.wait_status(Duration::from_millis(50), |_| false);
+        }
+        let pid = s.child_info().1.unwrap();
+        assert!(proc_alive(pid));
+        let t = Instant::now();
+        s.trigger_panic();
+        assert_eq!(s.wait_status(T, |st| st == "OpenRGB not found"), "OpenRGB not found");
+        // Well inside the spawn window, so this is the panic path, not a give-up.
+        assert!(t.elapsed() < SPAWN_WINDOW / 2, "{:?}", t.elapsed());
+        assert!(!s.child_info().2);
+        assert!(!proc_alive(pid));
+        s.shutdown();
+        assert_eq!(s.status(), "OpenRGB not found");
     }
 }
