@@ -6,6 +6,8 @@
 #
 # Installs the latest AppImage for the current user (no root), adds a menu entry,
 # and installs a udev rule (needs sudo once) so the cooler works without root.
+# It also installs OpenRGB (case lighting sync) and loads i2c-dev; skip with
+# --no-openrgb.
 # The app enables "start on login" itself on first launch.
 set -euo pipefail
 
@@ -19,6 +21,8 @@ APPIMAGE="$INSTALL_DIR/$APP.AppImage"
 DESKTOP_FILE="$DATA_HOME/applications/$APP.desktop"
 ICON_FILE="$DATA_HOME/icons/hicolor/128x128/apps/$APP.png"
 UDEV_RULE="/etc/udev/rules.d/70-open-trcc.rules"
+MODULES_CONF="/etc/modules-load.d/open-trcc.conf"
+WITH_OPENRGB=1
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==>\033[0m %s\n' "$*" >&2; }
@@ -67,6 +71,10 @@ uninstall() {
     info "Removing udev rule (sudo)"
     as_root rm -f "$UDEV_RULE"
     as_root udevadm control --reload-rules || true
+  fi
+  if [ -f "$MODULES_CONF" ]; then
+    info "Removing i2c-dev autoload config (sudo)"
+    as_root rm -f "$MODULES_CONF" || warn "Could not remove $MODULES_CONF"
   fi
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA_HOME/applications" || true
   info "Open TRCC removed (settings kept in $CONFIG_HOME/com.emirman.open-trcc)"
@@ -117,6 +125,40 @@ install_udev_rule() {
   as_root udevadm trigger --subsystem-match=hidraw --subsystem-match=usb || true
 }
 
+# Case lighting sync drives the motherboard ARGB header through an OpenRGB
+# server that the app starts itself; it only needs the openrgb binary and the
+# i2c-dev kernel module. Never fatal: the app works without it.
+ensure_openrgb() {
+  if command -v openrgb >/dev/null 2>&1; then
+    info "OpenRGB already installed"
+  else
+    local cmd=""
+    if command -v pacman >/dev/null 2>&1; then cmd="pacman -S --needed --noconfirm openrgb"
+    elif command -v apt-get >/dev/null 2>&1; then cmd="apt-get install -y openrgb"
+    elif command -v dnf >/dev/null 2>&1; then cmd="dnf install -y openrgb"
+    elif command -v zypper >/dev/null 2>&1; then cmd="zypper --non-interactive install OpenRGB"
+    elif command -v xbps-install >/dev/null 2>&1; then cmd="xbps-install -y OpenRGB"
+    fi
+    if [ -n "$cmd" ]; then
+      info "Installing OpenRGB for case lighting sync: $cmd (sudo)"
+      # shellcheck disable=SC2086
+      as_root $cmd || warn "Could not install OpenRGB; case lighting sync stays off until you install it."
+    else
+      warn "Install OpenRGB with your package manager to enable case lighting sync."
+    fi
+  fi
+  command -v openrgb >/dev/null 2>&1 || return 0
+
+  if ! { [ -f "$MODULES_CONF" ] && grep -qx 'i2c-dev' "$MODULES_CONF"; }; then
+    info "Loading i2c-dev at boot for motherboard RGB access (sudo)"
+    if printf 'i2c-dev\n' | as_root tee "$MODULES_CONF" >/dev/null; then :
+    else warn "Could not write $MODULES_CONF"; fi
+  fi
+  as_root modprobe i2c-dev || warn "Could not load the i2c-dev module; case lighting sync may not work until reboot."
+  as_root udevadm control --reload-rules 2>/dev/null || true
+  return 0
+}
+
 install_app() {
   [ "$(uname -s)" = "Linux" ] || die "This installer is for Linux. Use the .exe/.msi or .dmg from the releases page."
   [ "$(uname -m)" = "x86_64" ] || die "Only x86_64 AppImages are published right now."
@@ -156,6 +198,7 @@ EOF
 
   ensure_fuse2
   install_udev_rule "$tag"
+  if [ "$WITH_OPENRGB" -eq 1 ]; then ensure_openrgb; fi
 
   info "Starting Open TRCC (it will also start on every login)"
   nohup "$APPIMAGE" >/dev/null 2>&1 &
@@ -165,8 +208,18 @@ EOF
   case ":$PATH:" in *":$BIN_DIR:"*) ;; *) warn "$BIN_DIR is not in PATH; launch it from the app menu instead." ;; esac
 }
 
-case "${1:-}" in
-  --uninstall|-u) uninstall ;;
-  ""|--install) install_app ;;
-  *) die "Usage: $0 [--uninstall]" ;;
-esac
+main() {
+  local action="install" arg
+  for arg in "$@"; do
+    case "$arg" in
+      --uninstall|-u) action="uninstall" ;;
+      --install) action="install" ;;
+      --no-openrgb) WITH_OPENRGB=0 ;;
+      *) die "Usage: $0 [--install] [--no-openrgb] | --uninstall" ;;
+    esac
+  done
+  if [ "$action" = "uninstall" ]; then uninstall; else install_app; fi
+}
+
+# Run only when executed (bash install.sh, or piped: curl ... | bash), not when sourced.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then main "$@"; fi
