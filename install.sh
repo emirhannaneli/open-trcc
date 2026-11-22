@@ -6,6 +6,8 @@
 #
 # Installs the latest AppImage for the current user (no root), adds a menu entry,
 # and installs a udev rule (needs sudo once) so the cooler works without root.
+# It also installs OpenRGB (case lighting sync) and loads i2c-dev; skip with
+# --no-openrgb.
 # The app enables "start on login" itself on first launch.
 set -euo pipefail
 
@@ -19,6 +21,8 @@ APPIMAGE="$INSTALL_DIR/$APP.AppImage"
 DESKTOP_FILE="$DATA_HOME/applications/$APP.desktop"
 ICON_FILE="$DATA_HOME/icons/hicolor/128x128/apps/$APP.png"
 UDEV_RULE="/etc/udev/rules.d/70-open-trcc.rules"
+MODULES_CONF="/etc/modules-load.d/open-trcc.conf"
+WITH_OPENRGB=1
 
 info() { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==>\033[0m %s\n' "$*" >&2; }
@@ -67,6 +71,10 @@ uninstall() {
     info "Removing udev rule (sudo)"
     as_root rm -f "$UDEV_RULE"
     as_root udevadm control --reload-rules || true
+  fi
+  if [ -f "$MODULES_CONF" ]; then
+    info "Removing i2c-dev autoload config (sudo)"
+    as_root rm -f "$MODULES_CONF" || warn "Could not remove $MODULES_CONF"
   fi
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA_HOME/applications" || true
   info "Open TRCC removed (settings kept in $CONFIG_HOME/com.emirman.open-trcc)"
@@ -117,6 +125,88 @@ install_udev_rule() {
   as_root udevadm trigger --subsystem-match=hidraw --subsystem-match=usb || true
 }
 
+# Fallback for distros without an openrgb package (Ubuntu 24.04, Debian 12/13).
+# OpenRGB's official .deb cannot be installed there (it depends on hidapi 0.15
+# hotplug libraries those releases lack), so use the official AppImage, which
+# bundles its libraries, in /usr/local/bin (on PATH for systemd user units and
+# desktop launchers too). The AppImage ships no udev rules; on apt systems they
+# are taken out of the official release .deb with dpkg-deb. Never fatal.
+install_openrgb_release() {
+  [ "$(uname -m)" = "x86_64" ] || { warn "No official OpenRGB build for $(uname -m); install OpenRGB manually."; return 0; }
+  local release app_url deb_url="" tmp codename="" rules
+  info "No OpenRGB package for this distro; fetching the official AppImage"
+  release="$(fetch_text "https://codeberg.org/api/v1/repos/OpenRGB/OpenRGB/releases/latest")" \
+    || { warn "Could not reach codeberg.org; install OpenRGB manually."; return 0; }
+  app_url="$(printf '%s' "$release" | grep -o '"browser_download_url": *"[^"]*/OpenRGB_[^"/]*_x86_64_[^"/]*\.AppImage"' \
+    | head -n1 | sed -E 's/.*"(https[^"]+)"/\1/')" || true
+  [ -n "$app_url" ] || { warn "No OpenRGB AppImage in the latest release; install OpenRGB manually."; return 0; }
+
+  tmp="$(mktemp -d)"
+  if fetch "$app_url" "$tmp/openrgb" && as_root install -m755 "$tmp/openrgb" /usr/local/bin/openrgb; then
+    rules=0
+    if command -v dpkg-deb >/dev/null 2>&1; then
+      # shellcheck disable=SC1091
+      [ -r /etc/os-release ] && codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
+      case "$codename" in trixie|forky|sid) codename="trixie" ;; *) codename="bookworm" ;; esac
+      deb_url="$(printf '%s' "$release" | grep -o "\"browser_download_url\": *\"[^\"]*/openrgb_[^\"/]*_amd64_${codename}_[^\"/]*\\.deb\"" \
+        | head -n1 | sed -E 's/.*"(https[^"]+)"/\1/')" || true
+      if [ -n "$deb_url" ] && fetch "$deb_url" "$tmp/openrgb.deb" \
+        && dpkg-deb -x "$tmp/openrgb.deb" "$tmp/deb" \
+        && [ -s "$tmp/deb/usr/lib/udev/rules.d/60-openrgb.rules" ] \
+        && as_root install -Dm644 "$tmp/deb/usr/lib/udev/rules.d/60-openrgb.rules" /etc/udev/rules.d/60-openrgb.rules; then
+        rules=1
+      fi
+    fi
+    # ensure_openrgb reloads and triggers udev afterwards.
+    if [ "$rules" -eq 0 ]; then
+      warn "OpenRGB's udev rules were not installed, so it may not see your hardware without root."
+    fi
+  else
+    warn "Could not install the OpenRGB AppImage; install OpenRGB manually."
+  fi
+  rm -rf "$tmp"
+  return 0
+}
+
+# Case lighting sync drives the motherboard ARGB header through an OpenRGB
+# server that the app starts itself; it only needs the openrgb binary and the
+# i2c-dev kernel module. Never fatal: the app works without it.
+ensure_openrgb() {
+  if command -v openrgb >/dev/null 2>&1; then
+    info "OpenRGB already installed"
+  else
+    local cmd=""
+    if command -v pacman >/dev/null 2>&1; then cmd="pacman -S --needed --noconfirm openrgb"
+    elif command -v apt-get >/dev/null 2>&1; then cmd="apt-get install -y openrgb"
+    elif command -v dnf >/dev/null 2>&1; then cmd="dnf install -y openrgb"
+    elif command -v zypper >/dev/null 2>&1; then cmd="zypper --non-interactive install OpenRGB"
+    elif command -v xbps-install >/dev/null 2>&1; then cmd="xbps-install -y OpenRGB"
+    fi
+    if [ -n "$cmd" ]; then
+      info "Installing OpenRGB for case lighting sync: $cmd (sudo)"
+      # shellcheck disable=SC2086
+      as_root $cmd || warn "Could not install OpenRGB from the package manager."
+    fi
+  fi
+  command -v openrgb >/dev/null 2>&1 || install_openrgb_release
+  command -v openrgb >/dev/null 2>&1 || return 0
+
+  if ! { [ -f "$MODULES_CONF" ] && grep -qx 'i2c-dev' "$MODULES_CONF"; }; then
+    info "Loading i2c-dev at boot for motherboard RGB access (sudo)"
+    as_root mkdir -p "$(dirname "$MODULES_CONF")" 2>/dev/null || true
+    if printf 'i2c-dev\n' | as_root tee "$MODULES_CONF" >/dev/null; then :
+    else warn "Could not write $MODULES_CONF"; fi
+  fi
+  # Apply OpenRGB's udev rules (package or AppImage path) to devices that
+  # are already present: reload first, then load i2c-dev so its nodes are
+  # created under the new rules, then re-trigger existing HID/USB/i2c nodes.
+  as_root udevadm control --reload-rules || warn "Could not reload udev rules."
+  as_root modprobe i2c-dev || warn "Could not load the i2c-dev module; case lighting sync may not work until reboot."
+  as_root udevadm trigger --subsystem-match=hidraw --subsystem-match=usb --subsystem-match=i2c-dev \
+    || warn "Could not re-apply udev rules; replug or reboot if OpenRGB does not see your hardware."
+  return 0
+}
+
 install_app() {
   [ "$(uname -s)" = "Linux" ] || die "This installer is for Linux. Use the .exe/.msi or .dmg from the releases page."
   [ "$(uname -m)" = "x86_64" ] || die "Only x86_64 AppImages are published right now."
@@ -156,6 +246,7 @@ EOF
 
   ensure_fuse2
   install_udev_rule "$tag"
+  if [ "$WITH_OPENRGB" -eq 1 ]; then ensure_openrgb; fi
 
   info "Starting Open TRCC (it will also start on every login)"
   nohup "$APPIMAGE" >/dev/null 2>&1 &
@@ -165,8 +256,18 @@ EOF
   case ":$PATH:" in *":$BIN_DIR:"*) ;; *) warn "$BIN_DIR is not in PATH; launch it from the app menu instead." ;; esac
 }
 
-case "${1:-}" in
-  --uninstall|-u) uninstall ;;
-  ""|--install) install_app ;;
-  *) die "Usage: $0 [--uninstall]" ;;
-esac
+main() {
+  local action="install" arg
+  for arg in "$@"; do
+    case "$arg" in
+      --uninstall|-u) action="uninstall" ;;
+      --install) action="install" ;;
+      --no-openrgb) WITH_OPENRGB=0 ;;
+      *) die "Usage: $0 [--install] [--no-openrgb] | --uninstall" ;;
+    esac
+  done
+  if [ "$action" = "uninstall" ]; then uninstall; else install_app; fi
+}
+
+# Run only when executed (bash install.sh, or piped: curl ... | bash), not when sourced.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then main "$@"; fi

@@ -30,6 +30,8 @@ interface DeviceStatus {
   test_mode: boolean;
   temp_unit: "Celsius" | "Fahrenheit";
   is_on: boolean;
+  case_sync: boolean;
+  case_sync_status: string;
 }
 
 const PRESET_COLORS: { name: string; rgb: [number, number, number]; hex: string }[] = [
@@ -98,11 +100,23 @@ export default function App() {
     test_mode: false,
     temp_unit: "Celsius",
     is_on: true,
+    case_sync: true,
+    case_sync_status: "",
   });
 
   const [activeTab, setActiveTab] = useState<"display" | "lighting">("display");
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showCaseHelp, setShowCaseHelp] = useState(false);
   const [autostart, setAutostart] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    if (!showCaseHelp) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setShowCaseHelp(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showCaseHelp]);
 
   useEffect(() => {
     invoke<boolean>("get_autostart")
@@ -422,6 +436,58 @@ export default function App() {
                     {autostart ? "On (starts in tray)" : "Off"}
                   </button>
                 </div>
+              </div>
+
+              <div className="control-section">
+                <div className="section-row">
+                  <div className="title-with-help">
+                    <h2 className="section-title">Case lighting sync</h2>
+                    <button
+                      type="button"
+                      className="help-btn"
+                      aria-label="About case lighting sync"
+                      aria-expanded={showCaseHelp}
+                      aria-controls="case-sync-help"
+                      onClick={() => setShowCaseHelp((prev) => !prev)}
+                    >
+                      ?
+                    </button>
+                  </div>
+                  <button
+                    className={`test-toggle-btn ${status.case_sync ? "active" : ""}`}
+                    onClick={() => sendCommand("set_case_sync", { enabled: !status.case_sync })}
+                  >
+                    {status.case_sync ? "On" : "Off"}
+                  </button>
+                </div>
+                {status.case_sync_status && <p className="control-hint">{status.case_sync_status}</p>}
+                {showCaseHelp && (
+                  <div id="case-sync-help" className="help-panel">
+                    <p className="help-panel-title">Case lighting sync</p>
+                    <p>Matches your case's motherboard-controlled lighting to the display, through OpenRGB.</p>
+                    <ul>
+                      <li>
+                        Set your case lighting hub to <strong>M/B SYNC</strong> mode and connect it to the
+                        motherboard's <strong>5V 3-pin ARGB</strong> header (not the 12V 4-pin RGB header).
+                      </li>
+                      <li>
+                        Your motherboard must be supported by{" "}
+                        <a
+                          href="https://openrgb.org/devices.html"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            openUrl("https://openrgb.org/devices.html");
+                          }}
+                        >
+                          OpenRGB
+                        </a>{" "}
+                        and offer a <strong>Direct</strong> mode. If it doesn't, the status line says so and
+                        nothing is changed.
+                      </li>
+                      <li>OpenRGB is installed by the installer; Open TRCC starts and stops it for you.</li>
+                    </ul>
+                  </div>
+                )}
               </div>
 
               <div className="control-section">

@@ -37,6 +37,7 @@
     ],
     "linux": {
       "deb": {
+        "recommends": ["openrgb"],
         "files": {
           "/usr/lib/udev/rules.d/70-open-trcc.rules": "linux/70-open-trcc.rules"
         }
