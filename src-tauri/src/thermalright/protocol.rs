@@ -198,10 +198,40 @@ impl PacketBuilder {
         }
         set_digit(&mut on, LED_DIGIT_3, ones);
 
+        let level = self.brightness * TRCC_OUTPUT_SCALE;
+        for (i, led) in leds.iter_mut().enumerate() {
+            if !on[i] {
+                continue;
+            }
+            let color = self.effect_color(cpu_temp, cpu_usage, gpu_temp, gpu_usage, frame, is_gpu, LED_GROUP[i]);
+            *led = scale(color, level);
+        }
+
+        write_leds(&mut packet, &leds);
+        packet
+    }
+
+    /// Colour of one LED group for this frame, before brightness and TRCC's
+    /// output scale. Shared by the display packet and `sync_color`.
+    #[allow(clippy::too_many_arguments)]
+    fn effect_color(
+        &self,
+        cpu_temp: f32,
+        cpu_usage: f32,
+        gpu_temp: f32,
+        gpu_usage: f32,
+        frame: u64,
+        is_gpu: bool,
+        group: usize,
+    ) -> (u8, u8, u8) {
         // Effect time in TRCC frames, so speed 1.0 matches the Windows app.
         let t = frame as f32 * FRAME_MS as f32 / TRCC_FRAME_MS * self.speed.clamp(0.2, 3.0);
-        let base_color = match self.mode {
-            LedMode::Static | LedMode::Rainbow => self.color,
+        match self.mode {
+            LedMode::Static => self.color,
+            LedMode::Rainbow => {
+                let offset = (LED_GROUPS - 1 - group) as f32 * RAINBOW_GROUP_STEP_DEG;
+                hsv_to_rgb((t * RAINBOW_DEG_PER_FRAME + offset).rem_euclid(360.0), 1.0, 1.0)
+            }
             LedMode::Breathing => {
                 // Linear ramp up then down, never below 20% (TRCC's DSHX effect).
                 let phase = (t % BREATHING_PERIOD) / (BREATHING_PERIOD / 2.0);
@@ -239,24 +269,31 @@ impl PacketBuilder {
                 }
             }
             LedMode::Off => (0, 0, 0),
-        };
-
-        let level = self.brightness * TRCC_OUTPUT_SCALE;
-        for (i, led) in leds.iter_mut().enumerate() {
-            if !on[i] {
-                continue;
-            }
-            let color = if self.mode == LedMode::Rainbow {
-                let offset = (LED_GROUPS - 1 - LED_GROUP[i]) as f32 * RAINBOW_GROUP_STEP_DEG;
-                hsv_to_rgb((t * RAINBOW_DEG_PER_FRAME + offset).rem_euclid(360.0), 1.0, 1.0)
-            } else {
-                base_color
-            };
-            *led = scale(color, level);
         }
+    }
 
-        write_leds(&mut packet, &leds);
-        packet
+    /// The colour the case lighting should show this frame: the effect colour
+    /// at full output scale, with brightness applied.
+    pub fn sync_color(
+        &self,
+        cpu_temp: f32,
+        cpu_usage: f32,
+        gpu_temp: f32,
+        gpu_usage: f32,
+        frame: u64,
+    ) -> (u8, u8, u8) {
+        if self.mode == LedMode::Off || self.brightness <= 0.001 {
+            return (0, 0, 0);
+        }
+        if self.test_mode {
+            return scale(self.color, self.brightness);
+        }
+        let is_gpu = matches!(
+            self.resolve_active_source(frame),
+            DisplaySource::GpuTemp | DisplaySource::GpuUsage
+        );
+        let color = self.effect_color(cpu_temp, cpu_usage, gpu_temp, gpu_usage, frame, is_gpu, LED_GROUPS / 2);
+        scale(color, self.brightness)
     }
 
     fn format_temp(&self, celsius: f32) -> u32 {
@@ -413,5 +450,27 @@ mod power_tests {
         assert_eq!(p.len(), 110);
         assert_eq!(&p[..4], &[0xda, 0xdb, 0xdc, 0xdd]);
         assert!(p[20..].iter().all(|&c| c == 0));
+    }
+
+    #[test]
+    fn sync_color_static_is_full_scale() {
+        let b = PacketBuilder { mode: LedMode::Static, color: (200, 100, 0), ..Default::default() };
+        assert_eq!(b.sync_color(50.0, 0.0, 0.0, 0.0, 0), (200, 100, 0));
+    }
+
+    #[test]
+    fn sync_color_off_is_black() {
+        let b = PacketBuilder { mode: LedMode::Off, ..Default::default() };
+        assert_eq!(b.sync_color(50.0, 0.0, 0.0, 0.0, 7), (0, 0, 0));
+    }
+
+    #[test]
+    fn sync_color_matches_display_led_hue() {
+        // display LED colour == sync colour * 0.4 for Static and Breathing
+        for mode in [LedMode::Static, LedMode::Breathing] {
+            let b = PacketBuilder { mode, color: (250, 0, 0), ..Default::default() };
+            let p = b.build_display_packet(88.0, 0.0, 0.0, 0.0, 30);
+            assert_eq!(p[20], (b.sync_color(88.0, 0.0, 0.0, 0.0, 30).0 as f32 * 0.4) as u8);
+        }
     }
 }
