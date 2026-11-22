@@ -4,11 +4,11 @@ pub mod thermalright;
 
 use std::sync::{Arc, Mutex};
 use std::thread::{sleep, spawn};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
 
 use thermalright::{
-    DisplaySource, LedMode, PacketBuilder, SystemStats, TempUnit, ThermalrightDevice,
+    DisplaySource, FRAME_MS, LedMode, PacketBuilder, SystemStats, TempUnit, ThermalrightDevice,
 };
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -37,7 +37,8 @@ pub struct AppState {
     pub builder: PacketBuilder,
     pub device: ThermalrightDevice,
     pub stats: SystemStats,
-    pub tick: u64,
+    /// LED frame counter; the device loop advances it every `FRAME_MS`.
+    pub frame: u64,
 }
 
 #[tauri::command]
@@ -83,7 +84,7 @@ fn set_display_source(
     };
     app.status.display_source = new_source;
     app.builder.display_source = new_source;
-    app.status.active_source = app.builder.resolve_active_source(app.tick);
+    app.status.active_source = app.builder.resolve_active_source(app.frame);
     Ok(app.status.clone())
 }
 
@@ -122,7 +123,7 @@ fn set_cycle_interval(
     let clamped = secs.clamp(1, 30);
     app.status.cycle_interval_secs = clamped;
     app.builder.cycle_interval_secs = clamped;
-    app.status.active_source = app.builder.resolve_active_source(app.tick);
+    app.status.active_source = app.builder.resolve_active_source(app.frame);
     Ok(app.status.clone())
 }
 
@@ -236,6 +237,9 @@ impl Settings {
 /// Passed by the autostart entry so the app boots straight into the tray.
 const HIDDEN_ARG: &str = "--hidden";
 
+/// Sensors, device detection and UI updates run every 10th LED frame (500 ms).
+const STATS_EVERY_FRAMES: u64 = 10;
+
 /// Mirror the XDG autostart state into a systemd user unit, so compositors that
 /// skip `~/.config/autostart` (Hyprland, Sway, ...) still launch us on login.
 #[cfg(target_os = "linux")]
@@ -303,7 +307,7 @@ fn blank_display(app: &tauri::AppHandle) {
     let Ok(mut st) = state.lock() else { return };
     st.builder.mode = LedMode::Off;
     if st.device.supports_led_layout() {
-        let packet = st.builder.build_display_packet(0.0, 0.0, 0.0, 0.0, st.tick);
+        let packet = st.builder.build_display_packet(0.0, 0.0, 0.0, 0.0, st.frame);
         let _ = st.device.send_packet(&packet);
     }
 }
@@ -388,7 +392,7 @@ pub fn run() {
         builder: PacketBuilder::default(),
         device: ThermalrightDevice::new(),
         stats: SystemStats::new(),
-        tick: 0,
+        frame: 0,
     }));
 
     let background_state = Arc::clone(&app_state);
@@ -453,15 +457,22 @@ pub fn run() {
                     .lock()
                     .map(|st| Settings::from_status(&st.status))
                     .ok();
+                let frame_len = Duration::from_millis(FRAME_MS);
+                let mut next_frame = Instant::now();
                 loop {
-                    sleep(Duration::from_millis(500));
+                    next_frame += frame_len;
+                    sleep(next_frame.saturating_duration_since(Instant::now()));
 
-                    if let Ok(mut state) = background_state.lock() {
-                        state.tick = state.tick.wrapping_add(1);
+                    let Ok(mut guard) = background_state.lock() else { continue };
+                    let state = &mut *guard;
+                    state.frame = state.frame.wrapping_add(1);
 
+                    // LEDs animate every frame; sensors, device detection and the UI
+                    // keep the slower pace.
+                    if state.frame % STATS_EVERY_FRAMES == 0 {
                         let cpu_temp = state.stats.get_cpu_temp();
                         let cpu_usage = state.stats.get_cpu_usage();
-                        let (gpu_temp, gpu_usage) = if state.tick % 2 == 1 {
+                        let (gpu_temp, gpu_usage) = if state.frame % (2 * STATS_EVERY_FRAMES) == 0 {
                             state.stats.refresh_gpu()
                         } else {
                             state.stats.cached_gpu()
@@ -471,7 +482,7 @@ pub fn run() {
                         state.status.cpu_usage = cpu_usage;
                         state.status.gpu_temp = gpu_temp;
                         state.status.gpu_usage = gpu_usage;
-                        state.status.active_source = state.builder.resolve_active_source(state.tick);
+                        state.status.active_source = state.builder.resolve_active_source(state.frame);
 
                         let is_conn = state.device.refresh_device();
                         state.status.connected = is_conn;
@@ -486,19 +497,6 @@ pub fn run() {
                             state.status.device_usb_id = format!("{:04x}:{:04x}", spec.vid, spec.pid);
                         }
 
-                        // Sending the 30-LED frame to another layout lights random LEDs.
-                        // Keep sending while powered off: builder.mode is Off, so the frame is all black.
-                        if is_conn && supported {
-                            let packet = state.builder.build_display_packet(
-                                cpu_temp,
-                                cpu_usage,
-                                gpu_temp,
-                                gpu_usage,
-                                state.tick,
-                            );
-                            let _ = state.device.send_packet(&packet);
-                        }
-
                         let current = Settings::from_status(&state.status);
                         if saved_settings.as_ref() != Some(&current) {
                             current.save(&settings_path);
@@ -507,6 +505,23 @@ pub fn run() {
 
                         let _ = handle.emit("stats-update", state.status.clone());
                     }
+
+                    // Sending the 30-LED frame to another layout lights random LEDs.
+                    // Keep sending while powered off: builder.mode is Off, so the frame is all black.
+                    if state.status.connected && state.device.supports_led_layout() {
+                        let s = &state.status;
+                        let packet = state.builder.build_display_packet(
+                            s.cpu_temp,
+                            s.cpu_usage,
+                            s.gpu_temp,
+                            s.gpu_usage,
+                            state.frame,
+                        );
+                        let _ = state.device.send_packet(&packet);
+                    }
+                    drop(guard);
+                    // After a slow send, wait a full frame instead of bursting to catch up.
+                    next_frame = next_frame.max(Instant::now());
                 }
             });
 

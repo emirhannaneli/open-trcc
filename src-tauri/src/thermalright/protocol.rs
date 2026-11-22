@@ -60,6 +60,16 @@ const RAINBOW_GROUP_STEP_DEG: f32 = (768 / LED_GROUPS / 6) as f32 * 360.0 / 768.
 /// TRCC multiplies every channel by 0.4 before sending; full 255 is far too bright.
 const TRCC_OUTPUT_SCALE: f32 = 0.4;
 
+/// One LED frame every 50 ms (20 per second); a send takes ~30 ms. The device loop ticks at this rate.
+pub const FRAME_MS: u64 = 50;
+/// TRCC steps its LED effects every 10th tick of a 15 ms form timer.
+const TRCC_FRAME_MS: f32 = 150.0;
+/// TRCC effect lengths, in its own frames: breathing ramps up and down over 66,
+/// colour cycle crossfades 6 hue edges of 28 steps, rainbow moves 4 of 768 hue steps.
+const BREATHING_PERIOD: f32 = 66.0;
+const COLOR_CYCLE_DEG_PER_FRAME: f32 = 360.0 / (6.0 * 28.0);
+const RAINBOW_DEG_PER_FRAME: f32 = 4.0 * 360.0 / 768.0;
+
 /// Segments a..g for each digit.
 const DIGIT_SEGMENTS: [[bool; 7]; 10] = [
     [true, true, true, true, true, true, false],      // 0
@@ -101,12 +111,11 @@ impl Default for PacketBuilder {
 }
 
 impl PacketBuilder {
-    pub fn resolve_active_source(&self, tick: u64) -> DisplaySource {
+    pub fn resolve_active_source(&self, frame: u64) -> DisplaySource {
         match self.display_source {
             DisplaySource::AutoCycle => {
-                // tick runs every 500ms, so 2 ticks per second
-                let ticks_per_slot = (self.cycle_interval_secs.max(1) as u64) * 2;
-                match (tick / ticks_per_slot) % 4 {
+                let frames_per_slot = self.cycle_interval_secs.max(1) as u64 * 1000 / FRAME_MS;
+                match (frame / frames_per_slot) % 4 {
                     0 => DisplaySource::CpuTemp,
                     1 => DisplaySource::GpuTemp,
                     2 => DisplaySource::CpuUsage,
@@ -123,7 +132,7 @@ impl PacketBuilder {
         cpu_usage: f32,
         gpu_temp: f32,
         gpu_usage: f32,
-        tick: u64,
+        frame: u64,
     ) -> Vec<u8> {
         let mut packet = vec![0u8; 110];
 
@@ -148,7 +157,7 @@ impl PacketBuilder {
             return packet;
         }
 
-        let active_source = self.resolve_active_source(tick);
+        let active_source = self.resolve_active_source(frame);
         let (display_value, is_temperature, is_gpu) = match active_source {
             DisplaySource::CpuTemp => (self.format_temp(cpu_temp), true, false),
             DisplaySource::GpuTemp => (self.format_temp(gpu_temp), true, true),
@@ -189,12 +198,14 @@ impl PacketBuilder {
         }
         set_digit(&mut on, LED_DIGIT_3, ones);
 
-        let speed = self.speed.clamp(0.2, 3.0);
+        // Effect time in TRCC frames, so speed 1.0 matches the Windows app.
+        let t = frame as f32 * FRAME_MS as f32 / TRCC_FRAME_MS * self.speed.clamp(0.2, 3.0);
         let base_color = match self.mode {
             LedMode::Static | LedMode::Rainbow => self.color,
             LedMode::Breathing => {
-                let phase = (tick as f32 * 0.1 * speed).sin().abs();
-                let factor = 0.2 + 0.8 * phase;
+                // Linear ramp up then down, never below 20% (TRCC's DSHX effect).
+                let phase = (t % BREATHING_PERIOD) / (BREATHING_PERIOD / 2.0);
+                let factor = 0.2 + 0.8 * if phase < 1.0 { phase } else { 2.0 - phase };
                 (
                     (self.color.0 as f32 * factor) as u8,
                     (self.color.1 as f32 * factor) as u8,
@@ -202,7 +213,7 @@ impl PacketBuilder {
                 )
             }
             LedMode::ColorCycle => {
-                let hue = (tick as f32 * 4.0 * speed).rem_euclid(360.0);
+                let hue = (t * COLOR_CYCLE_DEG_PER_FRAME).rem_euclid(360.0);
                 hsv_to_rgb(hue, 1.0, 1.0)
             }
             LedMode::CpuTemp => {
@@ -237,7 +248,7 @@ impl PacketBuilder {
             }
             let color = if self.mode == LedMode::Rainbow {
                 let offset = (LED_GROUPS - 1 - LED_GROUP[i]) as f32 * RAINBOW_GROUP_STEP_DEG;
-                hsv_to_rgb((tick as f32 * 5.0 * speed + offset).rem_euclid(360.0), 1.0, 1.0)
+                hsv_to_rgb((t * RAINBOW_DEG_PER_FRAME + offset).rem_euclid(360.0), 1.0, 1.0)
             } else {
                 base_color
             };
@@ -359,6 +370,35 @@ mod tests {
         assert_eq!(c(16), c(19));
         // whole display spans < 60° of hue
         assert!(9.0 * RAINBOW_GROUP_STEP_DEG < 60.0);
+    }
+
+    fn first_led(b: &PacketBuilder, frame: u64) -> (u8, u8, u8) {
+        let p = b.build_display_packet(88.0, 0.0, 0.0, 0.0, frame);
+        (p[20], p[21], p[22])
+    }
+
+    #[test]
+    fn effects_change_gradually_between_frames() {
+        for mode in [LedMode::Rainbow, LedMode::ColorCycle, LedMode::Breathing] {
+            let b = PacketBuilder { mode, color: (255, 0, 0), ..Default::default() };
+            let max_step = (0..400)
+                .map(|f| {
+                    let (a, c) = (first_led(&b, f), first_led(&b, f + 1));
+                    a.0.abs_diff(c.0).max(a.1.abs_diff(c.1)).max(a.2.abs_diff(c.2))
+                })
+                .max()
+                .unwrap();
+            // Full scale is 102 after TRCC's 40% output; a few counts per frame reads as smooth.
+            assert!(max_step <= 4, "{:?} jumps {} per frame", mode, max_step);
+        }
+    }
+
+    #[test]
+    fn breathing_matches_trcc_period_and_floor() {
+        let b = PacketBuilder { mode: LedMode::Breathing, color: (250, 0, 0), ..Default::default() };
+        assert_eq!(first_led(&b, 0).0, (250.0 * 0.2 * 0.4) as u8);
+        // Peak at half of 66 TRCC frames (150 ms each) = 99 of ours.
+        assert!(first_led(&b, 99).0 >= 98);
     }
 }
 
