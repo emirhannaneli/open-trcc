@@ -1,5 +1,6 @@
 #[cfg(target_os = "linux")]
 mod session_autostart;
+mod openrgb;
 pub mod thermalright;
 
 use std::sync::{Arc, Mutex};
