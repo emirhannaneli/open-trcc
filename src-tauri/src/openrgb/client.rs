@@ -161,7 +161,7 @@ mod tests {
         Some((dev, id, pl))
     }
 
-    /// Fake server answering the handshake with `version`, then serving one
+    /// Fake server answering the handshake with `version`, then serving one fixture controller.
     fn fake_server(
         version: u32,
         send_update_after_connect: bool,
