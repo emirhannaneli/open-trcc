@@ -12,6 +12,7 @@ pub struct Client {
     stream: TcpStream,
     version: u32,
     list_updated: bool,
+    dead: bool,
 }
 
 impl Client {
@@ -34,10 +35,10 @@ impl Client {
             stream,
             version: 0,
             list_updated: false,
+            dead: false,
         };
 
-        c.send(0, p::REQUEST_PROTOCOL_VERSION, &p::PROTOCOL_VERSION.to_le_bytes())?;
-        let reply = c.recv()?;
+        let reply = c.request(0, p::REQUEST_PROTOCOL_VERSION, &p::PROTOCOL_VERSION.to_le_bytes())?;
         let server: [u8; 4] = reply
             .get(..4)
             .and_then(|b| b.try_into().ok())
@@ -55,8 +56,7 @@ impl Client {
     }
 
     pub fn controllers(&mut self) -> Result<Vec<Controller>, String> {
-        self.send(0, p::REQUEST_CONTROLLER_COUNT, &[])?;
-        let reply = self.recv()?;
+        let reply = self.request(0, p::REQUEST_CONTROLLER_COUNT, &[])?;
         let count: [u8; 4] = reply
             .get(..4)
             .and_then(|b| b.try_into().ok())
@@ -64,8 +64,7 @@ impl Client {
         let count = u32::from_le_bytes(count);
         let mut out = Vec::new();
         for dev in 0..count {
-            self.send(dev, p::REQUEST_CONTROLLER_DATA, &self.version.to_le_bytes())?;
-            let data = self.recv()?;
+            let data = self.request(dev, p::REQUEST_CONTROLLER_DATA, &self.version.to_le_bytes())?;
             out.push(p::parse_controller(&data, self.version)?);
         }
         Ok(out)
@@ -89,46 +88,85 @@ impl Client {
     }
 
     /// Non-blocking: whether a DEVICE_LIST_UPDATED notification has arrived
-    /// since the last call.
+    /// since the last call. Only whole packets already buffered are consumed.
+    /// A broken connection marks the client dead, so the next call errors.
     pub fn take_device_list_update(&mut self) -> bool {
-        if self.stream.set_nonblocking(true).is_ok() {
-            let mut hdr = [0u8; p::HEADER_LEN];
-            // Only consume when a whole header is already buffered.
-            while matches!(self.stream.peek(&mut hdr), Ok(n) if n == p::HEADER_LEN) {
-                if self.stream.set_nonblocking(false).is_err() || self.recv().is_err() {
-                    break;
-                }
-                if self.stream.set_nonblocking(true).is_err() {
-                    break;
-                }
-            }
-            self.stream.set_nonblocking(false).ok();
+        if !self.dead && self.drain_buffered().is_err() {
+            self.dead = true;
         }
         std::mem::take(&mut self.list_updated)
     }
 
-    fn send(&mut self, dev: u32, id: u32, payload: &[u8]) -> Result<(), String> {
-        self.stream
-            .write_all(&p::encode(dev, id, payload))
-            .map_err(|e| format!("send: {e}"))
+    fn drain_buffered(&mut self) -> Result<(), String> {
+        self.stream.set_nonblocking(true).map_err(|e| e.to_string())?;
+        let r = self.drain_buffered_inner();
+        let restore = self.stream.set_nonblocking(false).map_err(|e| e.to_string());
+        r.and(restore)
     }
 
-    /// Reads the next reply payload, skipping (and recording) device list
-    /// update notifications.
-    fn recv(&mut self) -> Result<Vec<u8>, String> {
+    fn drain_buffered_inner(&mut self) -> Result<(), String> {
+        loop {
+            let mut hdr = [0u8; p::HEADER_LEN];
+            match self.stream.peek(&mut hdr) {
+                Ok(0) => return Err("connection closed".into()),
+                Ok(n) if n < p::HEADER_LEN => return Ok(()),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                Err(e) => return Err(format!("peek: {e}")),
+            }
+            let (id, len) = parse_header(&hdr)?;
+            let mut buf = vec![0u8; p::HEADER_LEN + len];
+            match self.stream.peek(&mut buf) {
+                Ok(n) if n == buf.len() => {}
+                Ok(0) => return Err("connection closed".into()),
+                Ok(_) => return Ok(()), // partial packet: leave it for later
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(()),
+                Err(e) => return Err(format!("peek: {e}")),
+            }
+            // Fully buffered, so this cannot block.
+            self.stream
+                .read_exact(&mut buf)
+                .map_err(|e| format!("read: {e}"))?;
+            if id != p::DEVICE_LIST_UPDATED {
+                return Err(format!("unexpected unsolicited packet id {id}"));
+            }
+            self.list_updated = true;
+        }
+    }
+
+    fn send(&mut self, dev: u32, id: u32, payload: &[u8]) -> Result<(), String> {
+        if self.dead {
+            return Err("connection is dead".into());
+        }
+        let r = self
+            .stream
+            .write_all(&p::encode(dev, id, payload))
+            .map_err(|e| format!("send: {e}"));
+        if r.is_err() {
+            self.dead = true;
+        }
+        r
+    }
+
+    /// Sends a request and returns the payload of the matching reply.
+    fn request(&mut self, dev: u32, id: u32, payload: &[u8]) -> Result<Vec<u8>, String> {
+        self.send(dev, id, payload)?;
+        let r = self.recv(dev, id);
+        if r.is_err() {
+            self.dead = true;
+        }
+        r
+    }
+
+    /// Reads the next reply, skipping (and recording) device list update
+    /// notifications. The reply must echo the request's device and id.
+    fn recv(&mut self, dev: u32, want_id: u32) -> Result<Vec<u8>, String> {
         loop {
             let mut hdr = [0u8; p::HEADER_LEN];
             self.stream
                 .read_exact(&mut hdr)
                 .map_err(|e| format!("read: {e}"))?;
-            if &hdr[..4] != b"ORGB" {
-                return Err("bad packet magic".into());
-            }
-            let id = u32::from_le_bytes(hdr[8..12].try_into().unwrap());
-            let len = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
-            if len > 1 << 20 {
-                return Err(format!("packet too large: {len}"));
-            }
+            let (id, len) = parse_header(&hdr)?;
             let mut payload = vec![0u8; len];
             self.stream
                 .read_exact(&mut payload)
@@ -137,9 +175,28 @@ impl Client {
                 self.list_updated = true;
                 continue;
             }
+            let got_dev = u32::from_le_bytes(hdr[4..8].try_into().unwrap());
+            if id != want_id || got_dev != dev {
+                return Err(format!(
+                    "unexpected reply (dev {got_dev}, id {id}); wanted dev {dev}, id {want_id}"
+                ));
+            }
             return Ok(payload);
         }
     }
+}
+
+/// Validates a packet header, returning `(packet id, payload length)`.
+fn parse_header(hdr: &[u8; p::HEADER_LEN]) -> Result<(u32, usize), String> {
+    if &hdr[..4] != b"ORGB" {
+        return Err("bad packet magic".into());
+    }
+    let id = u32::from_le_bytes(hdr[8..12].try_into().unwrap());
+    let len = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
+    if len > 1 << 20 {
+        return Err(format!("packet too large: {len}"));
+    }
+    Ok((id, len))
 }
 
 #[cfg(test)]
@@ -216,23 +273,94 @@ mod tests {
         assert!(!c.take_device_list_update());
     }
 
-    #[test]
-    fn unsolicited_device_list_update_is_picked_up_without_blocking() {
+    /// Server that completes the handshake, runs `after`, then holds the
+    /// socket open until the test signals it is done.
+    fn scripted_server(
+        after: impl FnOnce(&mut TcpStream) + Send + 'static,
+    ) -> (String, std::sync::mpsc::Sender<()>, JoinHandle<()>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = l.local_addr().unwrap().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
         let h = thread::spawn(move || {
             let (mut s, _) = l.accept().unwrap();
             read_packet(&mut s).unwrap();
             s.write_all(&p::encode(0, p::REQUEST_PROTOCOL_VERSION, &6u32.to_le_bytes())).unwrap();
             read_packet(&mut s).unwrap();
+            after(&mut s);
+            rx.recv().ok();
+        });
+        (addr, tx, h)
+    }
+
+    #[test]
+    fn unsolicited_device_list_update_is_picked_up_without_blocking() {
+        let (addr, done, h) = scripted_server(|s| {
             s.write_all(&p::encode(0, p::DEVICE_LIST_UPDATED, &[])).unwrap();
-            thread::sleep(Duration::from_millis(500));
         });
         let mut c = Client::connect(&addr, Duration::from_secs(2)).unwrap();
-        assert!(!c.take_device_list_update());
         thread::sleep(Duration::from_millis(200));
+        let t = std::time::Instant::now();
         assert!(c.take_device_list_update());
         assert!(!c.take_device_list_update());
+        assert!(t.elapsed() < Duration::from_millis(50), "{:?}", t.elapsed());
+        done.send(()).unwrap();
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn partial_packet_does_not_block_or_kill_the_client() {
+        let (addr, done, h) = scripted_server(|s| {
+            // Header promises 4 payload bytes that never arrive in this test.
+            let mut pkt = p::encode(0, p::DEVICE_LIST_UPDATED, &[0; 4]);
+            pkt.truncate(p::HEADER_LEN + 1);
+            s.write_all(&pkt).unwrap();
+        });
+        let mut c = Client::connect(&addr, Duration::from_secs(2)).unwrap();
+        thread::sleep(Duration::from_millis(200));
+        let t = std::time::Instant::now();
+        assert!(!c.take_device_list_update());
+        assert!(t.elapsed() < Duration::from_millis(50), "{:?}", t.elapsed());
+        assert!(!c.dead);
+        done.send(()).unwrap();
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn closed_connection_marks_client_dead() {
+        let (addr, done, h) = scripted_server(|_| {});
+        let mut c = Client::connect(&addr, Duration::from_secs(2)).unwrap();
+        done.send(()).unwrap();
+        h.join().unwrap();
+        thread::sleep(Duration::from_millis(100));
+        c.take_device_list_update();
+        assert!(c.controllers().is_err());
+    }
+
+    #[test]
+    fn mismatched_reply_id_is_an_error_and_kills_the_client() {
+        let (addr, done, h) = scripted_server(|s| {
+            let (_, id, _) = read_packet(s).unwrap();
+            assert_eq!(id, p::REQUEST_CONTROLLER_COUNT);
+            s.write_all(&p::encode(0, p::REQUEST_CONTROLLER_DATA, &1u32.to_le_bytes())).unwrap();
+        });
+        let mut c = Client::connect(&addr, Duration::from_secs(2)).unwrap();
+        assert!(c.controllers().is_err());
+        assert!(c.controllers().is_err());
+        assert!(c.set_all_leds(0, 1, (0, 0, 0)).is_err());
+        done.send(()).unwrap();
+        h.join().unwrap();
+    }
+
+    #[test]
+    fn framing_error_makes_later_calls_fail() {
+        let (addr, done, h) = scripted_server(|s| {
+            read_packet(s).unwrap();
+            s.write_all(b"NOPE0123456789ab").unwrap();
+        });
+        let mut c = Client::connect(&addr, Duration::from_secs(2)).unwrap();
+        assert!(c.controllers().is_err());
+        assert!(c.controllers().is_err());
+        done.send(()).unwrap();
         h.join().unwrap();
     }
 
