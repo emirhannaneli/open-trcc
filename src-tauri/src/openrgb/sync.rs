@@ -43,11 +43,8 @@ struct Slot {
     dirty: bool,
     status: String,
     // Observed by tests: spawn count, last child pid, child not yet reaped.
-    #[cfg_attr(not(test), allow(dead_code))]
     spawns: u32,
-    #[cfg_attr(not(test), allow(dead_code))]
     child_pid: Option<u32>,
-    #[cfg_attr(not(test), allow(dead_code))]
     child_running: bool,
     /// Test-only trigger that makes the worker panic on its next wake-up.
     #[cfg(test)]

@@ -8,6 +8,7 @@ use std::thread::{sleep, spawn};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager, State};
 
+use openrgb::sync::CaseSync;
 use thermalright::{
     DisplaySource, FRAME_MS, LedMode, PacketBuilder, SystemStats, TempUnit, ThermalrightDevice,
 };
@@ -31,6 +32,8 @@ pub struct DeviceStatus {
     pub test_mode: bool,
     pub temp_unit: TempUnit,
     pub is_on: bool,
+    pub case_sync: bool,
+    pub case_sync_status: String,
 }
 
 pub struct AppState {
@@ -40,6 +43,8 @@ pub struct AppState {
     pub stats: SystemStats,
     /// LED frame counter; the device loop advances it every `FRAME_MS`.
     pub frame: u64,
+    /// Mirrors the case lighting colour onto the motherboard through OpenRGB.
+    pub case_sync: CaseSync,
 }
 
 #[tauri::command]
@@ -145,6 +150,15 @@ fn set_power(on: bool, state: State<'_, Arc<Mutex<AppState>>>) -> Result<DeviceS
 }
 
 #[tauri::command]
+fn set_case_sync(enabled: bool, state: State<'_, Arc<Mutex<AppState>>>) -> Result<DeviceStatus, String> {
+    let mut app = state.lock().map_err(|e| e.to_string())?;
+    app.status.case_sync = enabled;
+    app.case_sync.set_enabled(enabled);
+    app.status.case_sync_status = app.case_sync.status();
+    Ok(app.status.clone())
+}
+
+#[tauri::command]
 fn set_temp_unit(unit: String, state: State<'_, Arc<Mutex<AppState>>>) -> Result<DeviceStatus, String> {
     let mut app = state.lock().map_err(|e| e.to_string())?;
     let new_unit = match unit.to_lowercase().as_str() {
@@ -169,6 +183,7 @@ struct Settings {
     cycle_interval_secs: u32,
     temp_unit: TempUnit,
     is_on: bool,
+    case_sync: bool,
 }
 
 impl Default for Settings {
@@ -182,6 +197,7 @@ impl Default for Settings {
             cycle_interval_secs: 4,
             temp_unit: TempUnit::Celsius,
             is_on: true,
+            case_sync: true,
         }
     }
 }
@@ -197,6 +213,7 @@ impl Settings {
             cycle_interval_secs: s.cycle_interval_secs,
             temp_unit: s.temp_unit,
             is_on: s.is_on,
+            case_sync: s.case_sync,
         }
     }
 
@@ -210,6 +227,7 @@ impl Settings {
         st.cycle_interval_secs = self.cycle_interval_secs.clamp(1, 30);
         st.temp_unit = self.temp_unit;
         st.is_on = self.is_on;
+        st.case_sync = self.case_sync;
 
         let b = &mut app.builder;
         b.mode = if st.is_on { st.led_mode } else { LedMode::Off };
@@ -386,6 +404,8 @@ pub fn run() {
         test_mode: false,
         temp_unit: TempUnit::Celsius,
         is_on: true,
+        case_sync: true,
+        case_sync_status: String::new(),
     };
 
     let app_state = Arc::new(Mutex::new(AppState {
@@ -394,6 +414,7 @@ pub fn run() {
         device: ThermalrightDevice::new(),
         stats: SystemStats::new(),
         frame: 0,
+        case_sync: CaseSync::start(false),
     }));
 
     let background_state = Arc::clone(&app_state);
@@ -425,6 +446,7 @@ pub fn run() {
             set_test_mode,
             set_power,
             set_temp_unit,
+            set_case_sync,
             get_autostart,
             set_autostart,
         ])
@@ -445,6 +467,10 @@ pub fn run() {
                 && let Ok(mut state) = background_state.lock()
             {
                 saved.apply(&mut state);
+            }
+            // The worker starts disabled so a saved "off" never spawns a server.
+            if let Ok(state) = background_state.lock() {
+                state.case_sync.set_enabled(state.status.case_sync);
             }
             enable_autostart_on_first_run(app, &config_dir);
 
@@ -484,6 +510,7 @@ pub fn run() {
                         state.status.gpu_temp = gpu_temp;
                         state.status.gpu_usage = gpu_usage;
                         state.status.active_source = state.builder.resolve_active_source(state.frame);
+                        state.status.case_sync_status = state.case_sync.status();
 
                         let is_conn = state.device.refresh_device();
                         state.status.connected = is_conn;
@@ -520,6 +547,19 @@ pub fn run() {
                         );
                         let _ = state.device.send_packet(&packet);
                     }
+                    // Outside the cooler branch so the case still follows the effect
+                    // with the cooler unplugged. push_color never blocks.
+                    if state.status.case_sync {
+                        let s = &state.status;
+                        let color = state.builder.sync_color(
+                            s.cpu_temp,
+                            s.cpu_usage,
+                            s.gpu_temp,
+                            s.gpu_usage,
+                            state.frame,
+                        );
+                        state.case_sync.push_color(color);
+                    }
                     drop(guard);
                     // After a slow send, wait a full frame instead of bursting to catch up.
                     next_frame = next_frame.max(Instant::now());
@@ -534,6 +574,26 @@ pub fn run() {
             // Covers tray Quit and any other orderly shutdown.
             if let tauri::RunEvent::Exit = event {
                 blank_display(app);
+                // Clone the handle so the state lock is released while shutdown joins the thread.
+                let state = app.state::<Arc<Mutex<AppState>>>();
+                let sync = state.lock().ok().map(|st| st.case_sync.clone());
+                if let Some(sync) = sync {
+                    sync.shutdown();
+                }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_without_case_sync_default_to_on() {
+        let s: Settings = serde_json::from_str(
+            r#"{"led_mode":"Rainbow","display_source":"CpuTemp","color":[255,0,0],"brightness":1.0,"speed":1.0,"cycle_interval_secs":4,"temp_unit":"Celsius","is_on":true}"#,
+        )
+        .unwrap();
+        assert!(s.case_sync);
+    }
 }

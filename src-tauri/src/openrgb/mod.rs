@@ -5,6 +5,4 @@ pub mod client;
 #[cfg(test)]
 mod fake;
 pub mod protocol;
-// Consumed by the device loop from the next task on.
-#[allow(dead_code)]
 pub mod sync;

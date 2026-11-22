@@ -30,6 +30,8 @@ interface DeviceStatus {
   test_mode: boolean;
   temp_unit: "Celsius" | "Fahrenheit";
   is_on: boolean;
+  case_sync: boolean;
+  case_sync_status: string;
 }
 
 const PRESET_COLORS: { name: string; rgb: [number, number, number]; hex: string }[] = [
@@ -98,6 +100,8 @@ export default function App() {
     test_mode: false,
     temp_unit: "Celsius",
     is_on: true,
+    case_sync: true,
+    case_sync_status: "",
   });
 
   const [activeTab, setActiveTab] = useState<"display" | "lighting">("display");
@@ -422,6 +426,19 @@ export default function App() {
                     {autostart ? "On (starts in tray)" : "Off"}
                   </button>
                 </div>
+              </div>
+
+              <div className="control-section">
+                <div className="section-row">
+                  <h2 className="section-title">Case lighting sync</h2>
+                  <button
+                    className={`test-toggle-btn ${status.case_sync ? "active" : ""}`}
+                    onClick={() => sendCommand("set_case_sync", { enabled: !status.case_sync })}
+                  >
+                    {status.case_sync ? "On" : "Off"}
+                  </button>
+                </div>
+                {status.case_sync_status && <p className="control-hint">{status.case_sync_status}</p>}
               </div>
 
               <div className="control-section">
