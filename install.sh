@@ -125,6 +125,51 @@ install_udev_rule() {
   as_root udevadm trigger --subsystem-match=hidraw --subsystem-match=usb || true
 }
 
+# Fallback for distros without an openrgb package (Ubuntu 24.04, Debian 12/13).
+# OpenRGB's official .deb cannot be installed there (it depends on hidapi 0.15
+# hotplug libraries those releases lack), so use the official AppImage, which
+# bundles its libraries, in /usr/local/bin (on PATH for systemd user units and
+# desktop launchers too). The AppImage ships no udev rules; on apt systems they
+# are taken out of the official release .deb with dpkg-deb. Never fatal.
+install_openrgb_release() {
+  [ "$(uname -m)" = "x86_64" ] || { warn "No official OpenRGB build for $(uname -m); install OpenRGB manually."; return 0; }
+  local release app_url deb_url="" tmp codename="" rules
+  info "No OpenRGB package for this distro; fetching the official AppImage"
+  release="$(fetch_text "https://codeberg.org/api/v1/repos/OpenRGB/OpenRGB/releases/latest")" \
+    || { warn "Could not reach codeberg.org; install OpenRGB manually."; return 0; }
+  app_url="$(printf '%s' "$release" | grep -o '"browser_download_url": *"[^"]*/OpenRGB_[^"/]*_x86_64_[^"/]*\.AppImage"' \
+    | head -n1 | sed -E 's/.*"(https[^"]+)"/\1/')" || true
+  [ -n "$app_url" ] || { warn "No OpenRGB AppImage in the latest release; install OpenRGB manually."; return 0; }
+
+  tmp="$(mktemp -d)"
+  if fetch "$app_url" "$tmp/openrgb" && as_root install -m755 "$tmp/openrgb" /usr/local/bin/openrgb; then
+    rules=0
+    if command -v dpkg-deb >/dev/null 2>&1; then
+      # shellcheck disable=SC1091
+      [ -r /etc/os-release ] && codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
+      case "$codename" in trixie|forky|sid) codename="trixie" ;; *) codename="bookworm" ;; esac
+      deb_url="$(printf '%s' "$release" | grep -o "\"browser_download_url\": *\"[^\"]*/openrgb_[^\"/]*_amd64_${codename}_[^\"/]*\\.deb\"" \
+        | head -n1 | sed -E 's/.*"(https[^"]+)"/\1/')" || true
+      if [ -n "$deb_url" ] && fetch "$deb_url" "$tmp/openrgb.deb" \
+        && dpkg-deb -x "$tmp/openrgb.deb" "$tmp/deb" \
+        && [ -s "$tmp/deb/usr/lib/udev/rules.d/60-openrgb.rules" ] \
+        && as_root install -Dm644 "$tmp/deb/usr/lib/udev/rules.d/60-openrgb.rules" /etc/udev/rules.d/60-openrgb.rules; then
+        rules=1
+      fi
+    fi
+    if [ "$rules" -eq 1 ]; then
+      as_root udevadm control --reload-rules 2>/dev/null || true
+      as_root udevadm trigger --subsystem-match=i2c-dev --subsystem-match=hidraw --subsystem-match=usb 2>/dev/null || true
+    else
+      warn "OpenRGB's udev rules were not installed, so it may not see your hardware without root."
+    fi
+  else
+    warn "Could not install the OpenRGB AppImage; install OpenRGB manually."
+  fi
+  rm -rf "$tmp"
+  return 0
+}
+
 # Case lighting sync drives the motherboard ARGB header through an OpenRGB
 # server that the app starts itself; it only needs the openrgb binary and the
 # i2c-dev kernel module. Never fatal: the app works without it.
@@ -142,15 +187,15 @@ ensure_openrgb() {
     if [ -n "$cmd" ]; then
       info "Installing OpenRGB for case lighting sync: $cmd (sudo)"
       # shellcheck disable=SC2086
-      as_root $cmd || warn "Could not install OpenRGB; case lighting sync stays off until you install it."
-    else
-      warn "Install OpenRGB with your package manager to enable case lighting sync."
+      as_root $cmd || warn "Could not install OpenRGB from the package manager."
     fi
   fi
+  command -v openrgb >/dev/null 2>&1 || install_openrgb_release
   command -v openrgb >/dev/null 2>&1 || return 0
 
   if ! { [ -f "$MODULES_CONF" ] && grep -qx 'i2c-dev' "$MODULES_CONF"; }; then
     info "Loading i2c-dev at boot for motherboard RGB access (sudo)"
+    as_root mkdir -p "$(dirname "$MODULES_CONF")" 2>/dev/null || true
     if printf 'i2c-dev\n' | as_root tee "$MODULES_CONF" >/dev/null; then :
     else warn "Could not write $MODULES_CONF"; fi
   fi
