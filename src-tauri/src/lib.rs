@@ -237,8 +237,8 @@ impl Settings {
 /// Passed by the autostart entry so the app boots straight into the tray.
 const HIDDEN_ARG: &str = "--hidden";
 
-/// Sensors, device detection and UI updates run every 4th LED frame (500 ms).
-const STATS_EVERY_FRAMES: u64 = 4;
+/// Sensors, device detection and UI updates run every 10th LED frame (500 ms).
+const STATS_EVERY_FRAMES: u64 = 10;
 
 /// Mirror the XDG autostart state into a systemd user unit, so compositors that
 /// skip `~/.config/autostart` (Hyprland, Sway, ...) still launch us on login.

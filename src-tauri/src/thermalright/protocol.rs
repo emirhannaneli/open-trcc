@@ -60,8 +60,8 @@ const RAINBOW_GROUP_STEP_DEG: f32 = (768 / LED_GROUPS / 6) as f32 * 360.0 / 768.
 /// TRCC multiplies every channel by 0.4 before sending; full 255 is far too bright.
 const TRCC_OUTPUT_SCALE: f32 = 0.4;
 
-/// One LED frame every 125 ms (8 per second). The device loop ticks at this rate.
-pub const FRAME_MS: u64 = 125;
+/// One LED frame every 50 ms (20 per second); a send takes ~30 ms. The device loop ticks at this rate.
+pub const FRAME_MS: u64 = 50;
 /// TRCC steps its LED effects every 10th tick of a 15 ms form timer.
 const TRCC_FRAME_MS: f32 = 150.0;
 /// TRCC effect lengths, in its own frames: breathing ramps up and down over 66,
@@ -397,8 +397,8 @@ mod tests {
     fn breathing_matches_trcc_period_and_floor() {
         let b = PacketBuilder { mode: LedMode::Breathing, color: (250, 0, 0), ..Default::default() };
         assert_eq!(first_led(&b, 0).0, (250.0 * 0.2 * 0.4) as u8);
-        // Peak at half of 66 TRCC frames (150 ms each) = ~40 of ours.
-        assert!(first_led(&b, 40).0 >= 98);
+        // Peak at half of 66 TRCC frames (150 ms each) = 99 of ours.
+        assert!(first_led(&b, 99).0 >= 98);
     }
 }
 
