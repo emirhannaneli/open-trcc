@@ -487,13 +487,7 @@ impl Worker {
 
     fn start_child(&mut self) -> bool {
         let Some(cmd) = &self.spawn else { return false };
-        let child = Command::new(&cmd[0])
-            .args(&cmd[1..])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn();
-        let Ok(child) = child else { return false };
+        let Ok(child) = spawn_child(cmd) else { return false };
         {
             let mut g = self.shared.lock();
             g.spawns += 1;
@@ -537,6 +531,37 @@ impl Drop for Worker {
     fn drop(&mut self) {
         self.stop_child();
     }
+}
+
+/// Spawns the server with null stdio. On Linux the kernel sends it SIGTERM
+/// when the spawning thread exits, so it can't outlive us even when the app
+/// dies without running Drop / RunEvent::Exit (e.g. SIGTERM). The spawning
+/// thread is the sync worker, which owns the child for its whole life.
+fn spawn_child(cmd: &[String]) -> std::io::Result<Child> {
+    let mut c = Command::new(&cmd[0]);
+    c.args(&cmd[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        let parent = unsafe { libc::getpid() };
+        // SAFETY: only async-signal-safe calls between fork and exec.
+        unsafe {
+            c.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The parent may have died before prctl took effect.
+                if libc::getppid() != parent {
+                    return Err(std::io::Error::other("parent exited during spawn"));
+                }
+                Ok(())
+            });
+        }
+    }
+    c.spawn()
 }
 
 fn direct_mode(ctl: &super::protocol::Controller) -> Option<usize> {
@@ -773,5 +798,24 @@ mod tests {
         assert!(!proc_alive(pid));
         s.shutdown();
         assert_eq!(s.status(), "OpenRGB not found");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawned_child_dies_with_its_spawning_thread() {
+        use std::os::unix::process::ExitStatusExt;
+        let mut child = thread::spawn(|| spawn_child(&["sleep".into(), "60".into()]).unwrap())
+            .join()
+            .unwrap();
+        let pid = child.id();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = thread::spawn(move || tx.send(child.wait().unwrap()).ok());
+        let status = rx.recv_timeout(T);
+        if status.is_err() {
+            // Don't leave the child behind if the death signal didn't fire.
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        }
+        waiter.join().unwrap();
+        assert_eq!(status.unwrap().signal(), Some(libc::SIGTERM));
     }
 }
